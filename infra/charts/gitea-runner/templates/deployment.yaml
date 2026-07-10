@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "gitea-runner.fullname" . }}
+  labels:
+    {{- include "gitea-runner.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.cache.enabled }}
+  replicas: 1
+  {{- else }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "gitea-runner.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "gitea-runner.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "gitea-runner.fullname" . }}
+      {{- if .Values.cache.enabled }}
+      hostAliases:
+        - ip: 127.0.0.1
+          hostnames:
+            - "gitea-runner-cache"
+      {{- end }}
+      containers:
+        - name: runner
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: GITEA_INSTANCE_URL
+              value: {{ .Values.gitea.instanceUrl | quote }}
+            - name: GITEA_RUNNER_REGISTRATION_TOKEN_FILE
+              value: /etc/runner/token
+            - name: GITEA_RUNNER_NAME
+              value: {{ .Values.gitea.runnerName | quote }}
+            - name: GITEA_RUNNER_LABELS
+              value: {{ .Values.labels | quote }}
+            - name: GITEA_RUNNER_EPHEMERAL
+              value: {{ .Values.ephemeral | quote }}
+            {{- if .Values.cache.enabled }}
+            - name: CACHE_HOST
+              value: {{ .Values.cache.host | quote }}
+            - name: CACHE_PORT
+              value: {{ .Values.cache.port | quote }}
+            {{- end }}
+          volumeMounts:
+            - name: token
+              mountPath: /etc/runner
+              readOnly: true
+            {{- if eq .Values.runnerBackend "docker" }}
+            - name: docker-sock
+              mountPath: {{ .Values.hostDockerSocketPath }}
+              readOnly: true
+            {{- end }}
+          ports:
+            {{- if .Values.cache.enabled }}
+            - name: cache
+              containerPort: {{ .Values.cache.port }}
+              protocol: TCP
+            {{- end }}
+          {{- if .Values.livenessProbe.enabled }}
+          livenessProbe:
+            httpGet:
+              path: /-/ready
+              port: cache
+            initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+          {{- end }}
+          {{- if .Values.readinessProbe.enabled }}
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: cache
+            initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: token
+          secret:
+            secretName: {{ include "gitea-runner.fullname" . }}-config
+        {{- if eq .Values.runnerBackend "docker" }}
+        - name: docker-sock
+          hostPath:
+            path: {{ .Values.hostDockerSocketPath }}
+            type: Socket
+        {{- end }}

@@ -1,0 +1,78 @@
+# versions.yaml — master compatibility matrix for proxmox-cicd.
+#
+# Mirrors proxmox-k3s/versions.yaml in shape and intent: every
+# chart and image the orchestrator installs has its version
+# pin recorded here, with a `source:` URL and `fetched:` date
+# for audit. Every Python module that references a version
+# imports the constant from `apps/<name>.py`, which in turn
+# reads from this file at install time.
+#
+# Operators should NOT edit this file without bumping the
+# corresponding `apps/<name>.py` constant in lockstep.
+
+# -----------------------------------------------------------------------------
+# gitea — self-hosted Git + Actions + Packages.
+#
+# Pinned to chart v12.0.0 (gitea/helm-gitea) and image
+# `1.26.x` (rolling major.minor). The chart's `image.tag` is
+# `1.26.x` so a chart bump can't silently upgrade us to
+# 1.27 (which may carry a CRD-shape change).
+# Source: https://gitea.com/gitea/helm-chart/releases/tag/v12.0.0
+# Fetched: 2026-07-10
+# -----------------------------------------------------------------------------
+gitea:
+  chart:
+    "12.0.0":
+      chart_url: "oci://docker.gitea.com/charts/gitea"
+      source: "https://gitea.com/gitea/helm-chart/releases/tag/v12.0.0"
+      fetched: "2026-07-10"
+      notes: "Latest stable as of 2026-07-10."
+  image:
+    "1.26.x":
+      source: "https://hub.docker.com/r/gitea/gitea/tags?page=1&name=1.26"
+      fetched: "2026-07-10"
+      notes: "Rolling major.minor tag; safe across patches."
+
+# -----------------------------------------------------------------------------
+# gitea-runner — wraps the official gitea/runner:1.0.8 docker
+# image in a per-repo chart (infra/charts/gitea-runner/).
+#
+# Why we own this chart: gitea.org doesn't publish an
+# official runner helm chart. We wrap the docker image so
+# the install is reproducible + idempotent + CSI-attachable.
+# Source: https://docs.gitea.com/runner/1.0.8/
+# Fetched: 2026-07-10
+# -----------------------------------------------------------------------------
+gitea_runner:
+  chart:
+    "0.1.0":
+      source: "infra/charts/gitea-runner/Chart.yaml"
+      fetched: "2026-07-10"
+      notes: "First version of the in-repo chart."
+  image:
+    "1.0.8":
+      source: "https://docs.gitea.com/runner/1.0.8/"
+      fetched: "2026-07-10"
+      notes: "Pinned to the v1.0.8 docs as the documented LTS."
+
+# -----------------------------------------------------------------------------
+# bitwarden-sm-operator — controller for BitwardenSecret CRs.
+#
+# The chart lives on a pre-release channel, hence the
+# `--devel` flag in apps/bitwarden_sm.py.
+# Source: https://bitwarden.com/help/secrets-manager-kubernetes-operator/
+# Fetched: 2026-07-10
+# -----------------------------------------------------------------------------
+bitwarden_sm_operator:
+  chart:
+    "0.4.0":
+      chart_url: "bitwarden/sm-operator"
+      chart_repo: "https://charts.bitwarden.com/"
+      source: "https://bitwarden.com/help/secrets-manager-kubernetes-operator/"
+      fetched: "2026-07-10"
+      notes: "Pinned to chart 0.4.0; --devel required."
+  image:
+    "0.4.0":
+      source: "https://github.com/bitwarden/sm-operator"
+      fetched: "2026-07-10"
+      notes: "Operator image tag matches the chart's appVersion."

@@ -1,0 +1,32 @@
+# values/gitea-runner.yaml — overrides for the local
+# gitea-runner chart (infra/charts/gitea-runner/).
+
+# 1. Two replicas is enough for a single-CP cluster; bump
+#    per cluster.
+replicaCount: 2
+
+# 2. The in-cluster Gitea Service URL the runner polls.
+#    Same-namespace services use the short name, but the
+#    runner is in `gitea-runner` and gitea is in `gitea`,
+#    so we need the FQDN.
+gitea:
+  instanceUrl: "http://gitea-http.gitea.svc.cluster.local:3000"
+  runnerName: "cicd-runner"
+
+# 3. Labels the runner advertises. Workflows in repos will
+#    say `runs-on: ubuntu-22.04` (or `self-hosted`).
+labels: "ubuntu-22.04:docker://ubuntu:22.04,self-hosted:host"
+
+# 4. Ephemeral — credentials single-use.
+ephemeral: true
+
+# 5. Cache server — required for actions/cache to work.
+cache:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8088
+
+# 6. Use the host's docker socket for jobs. (On bare k3s
+#    this is the cluster's containerd-as-docker endpoint.)
+runnerBackend: "docker"
+hostDockerSocketPath: "/var/run/docker.sock"

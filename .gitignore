@@ -1,0 +1,41 @@
+# .gitignore — proxmox-cicd
+#
+# Mirrors proxmox-vms/.gitignore + proxmox-k3s/.gitignore so the
+# three repos share the same hygiene rules.
+
+# Operator secrets + state. Never commit.
+.env
+.env.*
+!.env.example
+*.tfvars
+*.tfvars.json
+terraform.tfstate
+terraform.tfstate.*
+*.tfstate.backup
+
+# Python build / test / lint artefacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Provisioner state. apps.json is a generated handoff, never source.
+infra/clusters/*/apps.json
+
+# Structured audit log. Generated, never source.
+logs/
+
+# Editor noise
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# OS junk
+Thumbs.db

@@ -1,0 +1,62 @@
+# infra/clusters/cicd/catalog.yaml — operator-edited
+# configuration for the cicd cluster's app catalog.
+#
+# The orchestrator reads this file at every cicdctl invocation.
+# `cicdctl validate cicd` parses it without touching the cluster;
+# `cicdctl plan cicd` adds the live-state diff.
+#
+# Schema (v1, 2026-07-10):
+#
+#   cluster_name:    must match the CLI argument exactly
+#   ingress:         base_domain -> every app's hostname is
+#                    <app>.base_domain (gitea becomes
+#                    gitea.bruj0.net).
+#   bitwarden:       optional. organization_id + per-app
+#                    *_secret_id fields. Empty values disable
+#                    BitwardenSecret CR creation for that app.
+#   apps:            a mapping of app_name -> {enabled, ...}.
+#                    Apps not listed here are skipped (but
+#                    still installed apps appear in `status`).
+#                    To add a 4th app: create
+#                    provisioner/lib/apps/<new>.py, register
+#                    it, then enable it here.
+
+cluster_name: cicd
+
+ingress:
+  # Replace with your real public domain. The orchestrator
+  # will create a Gateway + HTTPRoute for each enabled app
+  # that exposes an `ingress_host`.
+  base_domain: bruj0.net
+
+# Bitwarden Secrets Manager credentials. Leave empty to
+# disable BitwardenSecret CR creation for all apps (every
+# app that needs a secret will then require the operator
+# to provision the k8s Secret manually).
+bitwarden:
+  # Get from Bitwarden -> Organizations -> Settings.
+  organization_id: ""
+  # Bitwarden Secrets Manager secret UUID that holds the
+  # Gitea Runner registration token. Generate via:
+  #   bw generate password --length 32
+  # then store under Gitea Runner's org.
+  runner_secret_id: ""
+
+apps:
+  # Self-hosted Git + Actions + Packages. The user-facing
+  # entry point. Persists via proxmox-lvm-thin PVC.
+  gitea:
+    enabled: true
+
+  # Runs Gitea Actions jobs in Docker-in-Docker. Sourced
+  # registration token from Bitwarden Secrets Manager.
+  gitea-runner:
+    enabled: true
+
+  # Controller for BitwardenSecret CRs. MUST be enabled if
+  # any app (like gitea-runner) sources its secrets from
+  # Bitwarden. If you don't use Bitwarden at all, set this
+  # to false and the gitea-runner apply step will skip
+  # the BitwardenSecret CR creation.
+  bitwarden-sm-operator:
+    enabled: true

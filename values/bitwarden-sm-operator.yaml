@@ -1,0 +1,40 @@
+# values/bitwarden-sm-operator.yaml — Bitwarden Secrets Manager
+# operator values.
+#
+# Rendered via:
+#   helm upgrade --install sm-operator bitwarden/sm-operator \
+#     --version 0.4.0 -n sm-operator-system --create-namespace \
+#     --values values/bitwarden-sm-operator.yaml --devel
+#
+# Source: https://bitwarden.com/help/secrets-manager-kubernetes-operator/
+
+# 1. Operator image pin. The chart's default is fine; we pin
+#    it explicitly so a chart bump can't silently upgrade the
+#    controller.
+containers:
+  manager:
+    image:
+      repository: bitwarden/sm-operator
+      tag: "0.4.0"
+      pullPolicy: IfNotPresent
+  enableSeccompProfileRuntimeDefault: true
+
+# 2. Resource limits. Operator is small; runs in-cluster.
+resources:
+  limits:
+    cpu: "500m"
+    memory: "256Mi"
+  requests:
+    cpu: "50m"
+    memory: "64Mi"
+
+# 3. Refresh interval. Operators refresh BitwardenSecret CRs
+#    every N seconds. Minimum is 180 (per the Bitwarden docs).
+# 4. Cloud region. Operators outside the US/EU clouds set
+#    this explicitly. Self-hosted Bitwarden also needs
+#    bwApiUrlOverride + bwIdentityUrlOverride — we don't
+#    pin those here because every cluster has its own
+#    Bitwarden tenant.
+settings:
+  bwSecretsManagerRefreshInterval: 300
+  cloudRegion: US

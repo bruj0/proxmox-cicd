@@ -1,0 +1,27 @@
+apiVersion: v2
+name: gitea-runner
+description: |
+  Gitea Actions runner wrapped in a small Helm chart. The
+  official gitea/runner docker image is run as a long-lived
+  Deployment; the runner registers itself against a Gitea
+  instance using a registration token sourced from a Secret.
+
+  Sources:
+    - https://docs.gitea.com/runner/1.0.8/
+    - https://gitea.com/gitea/act-runner
+
+  Why we own this chart instead of using the upstream one:
+    the gitea org doesn't publish an official helm chart for
+    the runner. We just wrap the docker image in a chart so
+    the install is reproducible + idempotent + CSI-attachable.
+type: application
+version: 0.1.0
+appVersion: "1.0.8"
+keywords:
+  - gitea
+  - actions
+  - cicd
+  - runner
+home: https://docs.gitea.com/runner/
+sources:
+  - https://gitea.com/gitea/act-runner

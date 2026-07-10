@@ -1,0 +1,156 @@
+# values/gitea.yaml — Gitea chart values for the cicd cluster.
+#
+# Rendered via:
+#   helm upgrade --install gitea \
+#     oci://docker.gitea.com/charts/gitea \
+#     --version 12.0.0 \
+#     -n gitea \
+#     --create-namespace \
+#     -f values/gitea.yaml
+#
+# Reference: https://gitea.com/gitea/helm-chart (params table).
+#
+# This chart is the upstream one (gitea.com/gitea/helm-chart).
+# It comes with PostgreSQL-HA + Valkey-Cluster as default deps;
+# we disable HA (single CP, single worker) and pin every
+# dependency to a known version per versions.yaml.
+
+# 1. Image pin — gitea/gitea:1.26.x is the latest rolling
+#    tag in the 1.26 line as of 2026-07-10. We pin to a
+#    MAJOR.MINOR range so a chart bump can't silently
+#    upgrade us to 1.27 (which may carry a CRD-shape change).
+image:
+  tag: "1.26.x"
+  pullPolicy: IfNotPresent
+
+# 2. Persistence — chart creates a PVC against this SC.
+#    Stage 2 ships proxmox-lvm-thin; we point at it explicitly.
+#    5Gi is enough for ~50 repos + LFS; bump per cluster.
+persistence:
+  enabled: true
+  create: true
+  storageClass: "proxmox-lvm-thin"
+  size: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  # Keep the PVC on helm-uninstall so destroy/recreate cycles
+  # don't wipe data. Run `kubectl delete pvc` manually if you
+  # really want a clean slate.
+  annotations:
+    helm.sh/resource-policy: keep
+
+# 3. Built-in postgresql — disable HA (single instance).
+#    The chart's postgresql-ha defaults to 3 replicas which
+#    won't fit on our 1-CP/1-W cluster.
+postgresql-ha:
+  enabled: false
+
+# 4. Built-in postgresql (single-replica) — ENABLED.
+#    The chart's single postgresql sub-chart stays enabled.
+#    Pin its data PVC to the same SC.
+postgresql:
+  enabled: true
+  global:
+    postgresql:
+      auth:
+        database: gitea
+        username: gitea
+        password: gitea
+        postgresPassword: gitea-postgres
+  primary:
+    persistence:
+      enabled: true
+      storageClass: "proxmox-lvm-thin"
+      size: 5Gi
+    resources:
+      requests:
+        cpu: "50m"
+        memory: "128Mi"
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
+
+# 5. Built-in valkey (single-replica, HA cluster disabled).
+#    HA valkey-cluster is 6 replicas — same problem as pg.
+valkey-cluster:
+  enabled: false
+
+valkey:
+  enabled: true
+  architecture: standalone
+  master:
+    count: 1
+    persistence:
+      enabled: true
+      storageClass: "proxmox-lvm-thin"
+      size: 1Gi
+  replica:
+    count: 0
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+
+# 6. Service — ClusterIP. The Envoy Gateway in stage 2 routes
+#    to this ClusterIP via the HTTPRoute we apply separately.
+service:
+  http:
+    type: ClusterIP
+    port: 3000
+  ssh:
+    type: ClusterIP
+    port: 22
+
+# 7. Ingress — DISABLE. We use a Gateway API HTTPRoute
+#    instead (see apps/gitea.py::GATEWAY_MANIFEST). The chart's
+#    ingress block assumes Ingress NGINX-shaped annotations
+#    and would race with our HTTPRoute.
+ingress:
+  enabled: false
+
+# 8. Resources — small, single-CP cluster.
+deployment:
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "1000m"
+      memory: "512Mi"
+
+# 9. Admin user — initialOnlyRequireReset. The bootstrap
+#    prints the one-time plaintext to stdout on first apply
+#    and immediately stores it in Bitwarden Secrets Manager
+#    (see apps/bitwarden_sm.py and runbook rotate-gitea-tokens).
+gitea:
+  admin:
+    username: gitea_admin
+    passwordMode: initialOnlyRequireReset
+  config:
+    server:
+      # ROOT_URL, DOMAIN, SSH_DOMAIN are auto-derived by the
+      # chart from the HTTPRoute's `host:` field at apply time.
+      ENABLE_PPROF: false
+
+# 10. Probe — use the documented /api/healthz endpoint
+#     (https://docs.gitea.com/installation/install-on-kubernetes).
+gitea:
+  livenessProbe:
+    enabled: true
+    httpGet:
+      path: /api/healthz
+      port: http
+    initialDelaySeconds: 200
+    timeoutSeconds: 5
+    periodSeconds: 10
+  readinessProbe:
+    enabled: true
+    httpGet:
+      path: /api/healthz
+      port: http
+    initialDelaySeconds: 5
+    timeoutSeconds: 1
+    periodSeconds: 10

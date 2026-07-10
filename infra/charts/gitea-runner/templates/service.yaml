@@ -1,0 +1,17 @@
+{{- if .Values.cache.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gitea-runner.fullname" . }}-cache
+  labels:
+    {{- include "gitea-runner.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: cache
+      port: {{ .Values.cache.port }}
+      targetPort: cache
+      protocol: TCP
+  selector:
+    {{- include "gitea-runner.selectorLabels" . | nindent 4 }}
+{{- end }}
