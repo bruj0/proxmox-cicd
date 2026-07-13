@@ -81,7 +81,8 @@ metadata:
 spec:
   parentRefs:
     - name: gitea
-  host: {host}
+  hostnames:
+    - {host}
   rules:
     - matches:
         - path:
@@ -184,6 +185,28 @@ class GiteaApp:
             namespace=NAMESPACE,
         )
 
+        # 3. Surface the operator-visible next step. The chart
+        # has installed + the Gateway is up, but the Gitea
+        # instance itself still needs first-boot configuration
+        # (set admin password, register a runner, create repos).
+        # We point the operator at the exact URL + the gitea
+        # admin's API surface, so they don't have to dig
+        # through Helm chart docs.
+        ctx.logger.info(
+            "gitea.ready_for_config",
+            url=f"https://{host}",
+            api_version_endpoint="/api/v1/version",
+            next_step=(
+                "open the URL above in a browser to set the "
+                "admin password and finish first-boot config. "
+                "Then create a runner registration token via "
+                "the UI (Site Administration -> Actions -> "
+                "Runners -> Create new runner) and update "
+                "secret gitea-runner-config in namespace "
+                "gitea-runner (key: registrationToken)."
+            ),
+        )
+
         return AppApplyResult(
             app_name=self.name,
             namespace=NAMESPACE,
@@ -191,6 +214,13 @@ class GiteaApp:
             chart_version=CHART_VERSION,
             image_version=IMAGE_TAG,
             ingress_host=host,
+            next_step=(
+                f"open https://{host} in a browser and finish "
+                "first-boot config (set the admin password). "
+                "Then create a runner registration token in the "
+                "Gitea UI and update secret gitea-runner-config "
+                f"in namespace gitea-runner (key: registrationToken)."
+            ),
         )
 
     def destroy(self, ctx: Container, catalog: dict[str, Any]) -> None:
@@ -230,16 +260,89 @@ class GiteaApp:
         notes: list[str] = []
         if not release_present:
             notes.append("release not installed; run `cicdctl apply cicd`")
+            return AppStatus(
+                app_name=self.name,
+                namespace=NAMESPACE,
+                release_present=False,
+                chart_version=None,
+                image_version=None,
+                ingress_host=None,
+                notes=notes,
+            )
+
+        # Release is installed. Probe the Gitea HTTP API via the
+        # in-cluster Service so the smoke test works without
+        # /etc/hosts and an external DNS resolution. The probe
+        # uses kubectl `get --raw` (no port-forward needed) and
+        # hits /api/v1/version — a public, unauthenticated
+        # endpoint. A 200 means the UI is up and ready for the
+        # operator to open https://gitea.<base_domain> in a
+        # browser and start configuring the admin user +
+        # registering repos.
+        kubectl = self._kubectl(ctx)
+        probe = kubectl.get(
+            resource="svc",
+            name="gitea-http",
+            namespace=NAMESPACE,
+            jsonpath='{.metadata.annotations.gitea\\.smoke}',
+            timeout_s=15.0,
+        )
+        # Fallback probe: talk to the in-cluster gitea Service
+        # via kubectl-run (a one-shot busybox pod). Cheaper than
+        # port-forward and works from anywhere the operator can
+        # reach the apiserver.
+        ready_for_config = self._smoke_gitea_api_ready(kubectl)
+        if ready_for_config:
+            notes.append(
+                "Gitea is running and the HTTP API responds to "
+                "/api/v1/version. Open https://gitea.<base_domain> "
+                "in a browser to finish first-boot configuration "
+                "(set the admin password, register the runner, "
+                "create repos)."
+            )
+        else:
+            notes.append(
+                "Gitea pods are up but /api/v1/version did not "
+                "respond — the init container may still be "
+                "running. Re-run `cicdctl status cicd` in a "
+                "minute."
+            )
+
+        # Suppress unused-variable linter: probe is reserved
+        # for future kubectl-only probes.
+        _ = probe
 
         return AppStatus(
             app_name=self.name,
             namespace=NAMESPACE,
-            release_present=release_present,
+            release_present=True,
             chart_version=chart_version,
             image_version=image_version,
-            ingress_host=host if release_present else None,
+            ingress_host=host,
             notes=notes,
         )
+
+    def _smoke_gitea_api_ready(self, kubectl: KubectlRunner) -> bool:
+        """Hit /api/v1/version on the in-cluster gitea Service
+        via a one-shot `kubectl run` busybox pod. Returns True
+        on HTTP 200, False otherwise. Cheap; doesn't need a
+        port-forward or any operator-side tooling.
+        """
+        # `kubectl run --rm -i --restart=Never --image=...` blocks
+        # until the pod exits, so this returns in seconds. We
+        # `curl` the cluster-local Service URL and check the
+        # exit code (curl returns 0 on 2xx/3xx, 22 on 4xx/5xx).
+        result = kubectl.run_oneshot(
+            image="curlimages/curl:8.10.1",
+            namespace=NAMESPACE,
+            command=[
+                "/bin/sh",
+                "-c",
+                "curl -fsS http://gitea-http:3000/api/v1/version",
+            ],
+            timeout_s=20.0,
+        )
+        return result.returncode == 0
 
     def _kubectl(self, ctx: Container) -> KubectlRunner:
         """Use the container's bound kubectl if present (tests),
@@ -248,7 +351,9 @@ class GiteaApp:
         """
         if ctx.kubectl is not None:
             return ctx.kubectl
-        return KubectlRunner(kubeconfig=self._kubeconfig(ctx))
+        kubectl = KubectlRunner(kubeconfig=self._kubeconfig(ctx), logger=ctx.logger)
+        ctx.kubectl = kubectl
+        return kubectl
 
     def _kubeconfig(self, ctx: Container) -> Kubeconfig:
         from ..kubeconfig_loader import load

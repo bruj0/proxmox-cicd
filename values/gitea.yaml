@@ -15,12 +15,16 @@
 # we disable HA (single CP, single worker) and pin every
 # dependency to a known version per versions.yaml.
 
-# 1. Image pin — gitea/gitea:1.26.x is the latest rolling
-#    tag in the 1.26 line as of 2026-07-10. We pin to a
-#    MAJOR.MINOR range so a chart bump can't silently
-#    upgrade us to 1.27 (which may carry a CRD-shape change).
+# 1. Image pin — gitea/gitea:1.23.8-rootless (the chart
+#    appVersion) is what the chart's init-app-ini was tested
+#    against. The chart calls a gitea binary flag
+#    (`-o`) that was removed in 1.26; we therefore let the
+#    chart default to its pinned appVersion by leaving
+#    `image.tag` empty. Bump this once the upstream chart
+#    updates its init-app-ini template.
 image:
-  tag: "1.26.x"
+  tag: ""
+  rootless: true
   pullPolicy: IfNotPresent
 
 # 2. Persistence — chart creates a PVC against this SC.
@@ -39,6 +43,17 @@ persistence:
   annotations:
     helm.sh/resource-policy: keep
 
+# 1b. Top-level `global:` block. The Bitnami postgresql +
+#     valkey subcharts refuse to render non-standard images
+#     by default. Since we point them at docker.io/bitnamilegacy
+#     (the archived bitnami repo on Docker Hub moved in 2026),
+#     we opt into the substitute-image path here. This block
+#     is propagated to the subcharts via the gitea chart's
+#     pass-through global handling.
+global:
+  security:
+    allowInsecureImages: true
+
 # 3. Built-in postgresql — disable HA (single instance).
 #    The chart's postgresql-ha defaults to 3 replicas which
 #    won't fit on our 1-CP/1-W cluster.
@@ -48,8 +63,19 @@ postgresql-ha:
 # 4. Built-in postgresql (single-replica) — ENABLED.
 #    The chart's single postgresql sub-chart stays enabled.
 #    Pin its data PVC to the same SC.
+#
+#    Bitnami moved the postgresql image from docker.io/bitnami
+#    to docker.io/bitnamilegacy in 2026 (the upstream Bitnami
+#    Docker Hub org is now archived). We override
+#    image.registry + image.repository so the chart pulls
+#    from bitnamilegacy without needing to bump the chart
+#    itself. Pin the tag to a concrete bitnamilegacy version.
 postgresql:
   enabled: true
+  image:
+    registry: docker.io
+    repository: bitnamilegacy/postgresql
+    tag: "17.5.0-debian-12-r2"
   global:
     postgresql:
       auth:
@@ -78,6 +104,15 @@ valkey-cluster:
 valkey:
   enabled: true
   architecture: standalone
+  # Bitnami moved the valkey image to docker.io/bitnamilegacy
+  # (see postgresql section above for the rationale). The
+  # Bitnami chart's pinned tag 8.1.1-debian-12-r0 only exists
+  # in the archived bitnami/valkey repo; bump to a tag that
+  # exists in bitnamilegacy.
+  image:
+    registry: docker.io
+    repository: bitnamilegacy/valkey
+    tag: "8.1.3-debian-12-r3"
   master:
     count: 1
     persistence:

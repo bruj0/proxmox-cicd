@@ -26,7 +26,13 @@ cache:
   host: "0.0.0.0"
   port: 8088
 
-# 6. Use the host's docker socket for jobs. (On bare k3s
-#    this is the cluster's containerd-as-docker endpoint.)
-runnerBackend: "docker"
-hostDockerSocketPath: "/var/run/docker.sock"
+# 6. Use the host's containerd socket for jobs. k3s
+#    bundles its own containerd at
+#    /run/k3s/containerd/containerd.sock (the standard
+#    /run/containerd/containerd.sock doesn't exist on a
+#    k3s node). The runner binary uses this socket to
+#    spawn job containers in the cluster's container
+#    runtime, mirroring the docker-socket pattern but
+#    for k3s.
+runnerBackend: "containerd"
+hostContainerdSocketPath: "/run/k3s/containerd/containerd.sock"

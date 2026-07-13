@@ -54,6 +54,10 @@ spec:
             - name: docker-sock
               mountPath: {{ .Values.hostDockerSocketPath }}
               readOnly: true
+            {{- else if eq .Values.runnerBackend "containerd" }}
+            - name: containerd-sock
+              mountPath: {{ .Values.hostContainerdSocketPath | default "/run/containerd/containerd.sock" }}
+              readOnly: true
             {{- end }}
           ports:
             {{- if .Values.cache.enabled }}
@@ -87,5 +91,10 @@ spec:
         - name: docker-sock
           hostPath:
             path: {{ .Values.hostDockerSocketPath }}
+            type: Socket
+        {{- else if eq .Values.runnerBackend "containerd" }}
+        - name: containerd-sock
+          hostPath:
+            path: {{ .Values.hostContainerdSocketPath | default "/run/containerd/containerd.sock" }}
             type: Socket
         {{- end }}

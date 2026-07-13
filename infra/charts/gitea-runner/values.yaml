@@ -49,12 +49,15 @@ serviceAccount:
   create: true
   name: ""
 
-# 9. Docker-in-Docker. The runner spawns job containers in
-#    Docker; we mount the host's docker socket so the runner
-#    can `docker run` against the cluster's containerd.
-#    Set to "dind" to use a nested daemon instead.
+# 9. Container backend. The runner spawns job containers in
+#    the cluster's container runtime:
+#      - "docker"     mount the host docker socket
+#      - "containerd" mount the host containerd socket (k3s)
+#    Set to anything else (e.g. "none") to disable host socket
+#    mounting entirely; jobs then run in the runner container.
 runnerBackend: "docker"
 hostDockerSocketPath: "/var/run/docker.sock"
+hostContainerdSocketPath: "/run/containerd/containerd.sock"
 
 # 10. Probe — use the runner's /-/ready endpoint (gitea
 #     runner 1.x exposes this for k8s).
