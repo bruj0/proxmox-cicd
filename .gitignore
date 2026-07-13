@@ -24,11 +24,24 @@ dist/
 .pytest_cache/
 .ruff_cache/
 
-# Provisioner state. apps.json is a generated handoff, never source.
-infra/clusters/*/apps.json
+# Provisioner state. Each `infra/clusters/<name>/` directory
+# is operator-local: catalog.yaml + kubeconfig.yaml + apps.json
+# are generated on first apply and never committed. The
+# committed template is `infra/clusters/catalog.yaml.example`
+# — cp it into place on first run.
+infra/clusters/*
+!infra/clusters/catalog.yaml.example
 
 # Structured audit log. Generated, never source.
 logs/
+
+# Apply-rendered values files. The orchestrator writes
+# `values/<name>.values-rendered.yaml` next to each
+# committed `values/<name>.yaml` at apply-time, overlaying
+# operator-local overrides (URLs, etc.) on top of the
+# committed placeholder. Re-generated on every apply; never
+# committed.
+values/*.values-rendered.yaml
 
 # Editor noise
 .vscode/

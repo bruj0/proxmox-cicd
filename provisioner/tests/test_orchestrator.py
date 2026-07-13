@@ -27,14 +27,14 @@ def test_load_catalog_minimal(tmp_path: Path) -> None:
     catalog_path.write_text(
         "cluster_name: cicd\n"
         "ingress:\n"
-        "  base_domain: bruj0.net\n"
+        "  base_domain: example.net\n"
         "apps:\n"
         "  gitea:\n"
         "    enabled: true\n"
     )
     catalog = load_catalog(catalog_path, "cicd")
     assert catalog.cluster_name == "cicd"
-    assert catalog.ingress_base_domain == "bruj0.net"
+    assert catalog.ingress_base_domain == "example.net"
     assert catalog.apps["gitea"].enabled is True
     assert catalog.enabled_app_names() == ["gitea"]
 
@@ -72,7 +72,7 @@ def test_load_catalog_requires_cluster_name_match(tmp_path: Path) -> None:
     catalog_path.write_text(
         "cluster_name: apps\n"
         "ingress:\n"
-        "  base_domain: bruj0.net\n"
+        "  base_domain: example.net\n"
         "apps:\n"
         "  gitea:\n"
         "    enabled: true\n"
@@ -87,7 +87,7 @@ def test_load_catalog_requires_at_least_one_app(tmp_path: Path) -> None:
     catalog_path.write_text(
         "cluster_name: cicd\n"
         "ingress:\n"
-        "  base_domain: bruj0.net\n"
+        "  base_domain: example.net\n"
         "apps: {}\n"
     )
     with pytest.raises(CatalogError):
@@ -98,7 +98,7 @@ def test_validate_enabled_apps_exist_raises_on_unknown(tmp_path: Path) -> None:
     catalog = Catalog(
         cluster_name="cicd",
         apps={"unknown-app": AppConfig(enabled=True)},
-        ingress_base_domain="bruj0.net",
+        ingress_base_domain="example.net",
     )
     with pytest.raises(CatalogError) as ei:
         validate_enabled_apps_exist(catalog, ["gitea", "vaultwarden-k8s-sync"])
@@ -109,7 +109,7 @@ def test_validate_enabled_apps_exist_passes_when_known() -> None:
     catalog = Catalog(
         cluster_name="cicd",
         apps={"gitea": AppConfig(enabled=True)},
-        ingress_base_domain="bruj0.net",
+        ingress_base_domain="example.net",
     )
     # Should not raise.
     validate_enabled_apps_exist(catalog, ["gitea", "vaultwarden-k8s-sync"])
@@ -120,17 +120,17 @@ def test_catalog_as_dict_shape(tmp_path: Path) -> None:
     catalog_path.write_text(
         "cluster_name: cicd\n"
         "ingress:\n"
-        "  base_domain: bruj0.net\n"
+        "  base_domain: example.net\n"
         "vaultwarden:\n"
-        "  server_url: https://bitwarden.bruj0.net\n"
+        "  server_url: https://bitwarden.example.net\n"
         "apps:\n"
         "  gitea:\n"
         "    enabled: true\n"
     )
     catalog = load_catalog(catalog_path, "cicd")
     d = catalog.as_dict()
-    assert d["ingress"]["base_domain"] == "bruj0.net"
-    assert d["vaultwarden"]["server_url"] == "https://bitwarden.bruj0.net"
+    assert d["ingress"]["base_domain"] == "example.net"
+    assert d["vaultwarden"]["server_url"] == "https://bitwarden.example.net"
     assert d["apps"]["gitea"]["enabled"] is True
 
 
@@ -171,7 +171,7 @@ def test_orchestrator_plan_returns_zero_on_success(tmp_path: Path) -> None:
         tmp_path,
         "cluster_name: cicd\n"
         "ingress:\n"
-        "  base_domain: bruj0.net\n"
+        "  base_domain: example.net\n"
         "apps:\n"
         "  gitea:\n"
         "    enabled: true\n",
@@ -184,7 +184,7 @@ def test_orchestrator_validate_returns_zero_on_success(tmp_path: Path) -> None:
         tmp_path,
         "cluster_name: cicd\n"
         "ingress:\n"
-        "  base_domain: bruj0.net\n"
+        "  base_domain: example.net\n"
         "apps:\n"
         "  gitea:\n"
         "    enabled: true\n",
@@ -207,7 +207,7 @@ def test_orchestrator_apply_returns_zero_on_full_mocks(tmp_path: Path) -> None:
         tmp_path,
         "cluster_name: cicd\n"
         "ingress:\n"
-        "  base_domain: bruj0.net\n"
+        "  base_domain: example.net\n"
         "apps:\n"
         "  vaultwarden-k8s-sync:\n"
         "    enabled: true\n"
@@ -259,7 +259,7 @@ def test_orchestrator_destroy_writes_nothing_and_uninstalls(tmp_path: Path) -> N
         tmp_path,
         "cluster_name: cicd\n"
         "ingress:\n"
-        "  base_domain: bruj0.net\n"
+        "  base_domain: example.net\n"
         "apps:\n"
         "  gitea:\n"
         "    enabled: true\n",

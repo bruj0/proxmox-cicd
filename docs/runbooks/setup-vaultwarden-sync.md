@@ -49,8 +49,10 @@ The contract is:
 ### 1. Create a dedicated sync account
 
 If you don't already have a no-2FA Vaultwarden user
-for VKS, create one at https://bitwarden.bruj0.net (or
-your Vaultwarden URL):
+for VKS, create one at your Vaultwarden URL
+(the placeholder in `infra/clusters/<name>/catalog.yaml`
+is `https://bitwarden.example.net` — replace with
+your real URL):
 
 1. Sign up with a fresh email. **Do not enable 2FA.**
 2. Note the master password — you'll type it into
@@ -102,7 +104,7 @@ apps:
 ### 1. Apply
 
 ```sh
-cd /home/bruj0/projects/proxmox/proxmox-cicd
+# from the proxmox-cicd repo root
 uv run cicdctl apply cicd --auto-approve
 ```
 

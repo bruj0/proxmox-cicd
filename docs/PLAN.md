@@ -78,7 +78,7 @@ restart any infrastructure pods. It only:
 
 | App | Chart | What it does | Persistence | Ingress |
 |---|---|---|---|---|
-| `gitea` | `oci://docker.gitea.com/charts/gitea` | Self-hosted Git + Actions + Packages | lvm-thin PVC for `/data` (repos, avatars, LFS) | `HTTPRoute` -> `gitea.bruj0.net` (HTTP 3000) |
+| `gitea` | `oci://docker.gitea.com/charts/gitea` | Self-hosted Git + Actions + Packages | lvm-thin PVC for `/data` (repos, avatars, LFS) | `HTTPRoute` -> `gitea.example.net` (HTTP 3000) |
 | `gitea-runner` | `oci://ghcr.io/actions-runner-controller/actions-runner-controller` is wrong — we use the [gitea/act-runner](https://gitea.com/gitea/act-runner) **docker** image, packaged as a small per-app chart under `infra/charts/gitea-runner/` | Runs Gitea Actions jobs in Docker-in-Docker containers | `EmptyDir` for `/data` (ephemeral runner) | none |
 | `bitwarden-sm-operator` | `https://charts.bitwarden.com/bitwarden/sm-operator` (devel) | Syncs Bitwarden Secrets Manager secrets into Kubernetes Secrets | none (the controller is stateless) | none |
 
@@ -94,7 +94,7 @@ name. To add or remove an app, the operator edits one
 The catalog v0.1.0 is the minimum that's useful end-to-end:
 
 - **gitea** is the user-facing entry point. Once it's healthy
-  on `https://gitea.bruj0.net/`, operators can sign in and
+  on `https://gitea.example.net/`, operators can sign in and
   push code. Without gitea, the rest is just plumbing.
 - **gitea-runner** is what makes `git push` actually do
   something: it polls gitea for queued Actions jobs and runs
@@ -512,7 +512,7 @@ Acceptance:
       "release": "gitea",
       "chart_version": "12.0.0",
       "image_version": "1.26.x",
-      "ingress_host": "gitea.bruj0.net"
+      "ingress_host": "gitea.example.net"
     },
     ...
   ]
@@ -536,7 +536,7 @@ Acceptance:
   SSH_KEY=~/.ssh/id_rsa` succeeds end-to-end against the
   real cicd cluster.
 - `kubectl get gitea -n gitea` shows Ready=True.
-- `https://gitea.bruj0.net/` returns 200 OK (via the
+- `https://gitea.example.net/` returns 200 OK (via the
   Cloudflare Tunnel that stage 2 provisioned).
 - A CI-style workflow inside gitea (provided by a
   starter `hello-ci.yaml` repo) runs on the
@@ -547,7 +547,7 @@ Acceptance:
 These are choices the operator (you) needs to make before
 WP3 starts:
 
-1. **Public hostname.** Plan defaults to `gitea.bruj0.net`.
+1. **Public hostname.** Plan defaults to `gitea.example.net`.
    Change to whatever your real DNS is. The
    `catalog.yaml` for cicd should expose this via
    `catalog.ingress.base_domain`.

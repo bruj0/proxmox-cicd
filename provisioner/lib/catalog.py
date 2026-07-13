@@ -8,9 +8,9 @@ Shape (YAML, parsed narrowly with stdlib regex):
 
   cluster_name: cicd
   ingress:
-    base_domain: bruj0.net      # gitea becomes gitea.bruj0.net
+    base_domain: example.net      # gitea becomes gitea.example.net
   vaultwarden:
-    server_url: https://bitwarden.bruj0.net
+    server_url: https://bitwarden.example.net
   apps:
     gitea:
       enabled: true

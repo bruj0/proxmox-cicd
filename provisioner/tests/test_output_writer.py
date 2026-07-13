@@ -25,7 +25,7 @@ def test_build_apps_json_shape() -> None:
             release="gitea",
             chart_version="12.0.0",
             image_version="1.26.x",
-            ingress_host="gitea.bruj0.net",
+            ingress_host="gitea.example.net",
         ),
         AppApplyResult(
             app_name="vaultwarden-k8s-sync",
@@ -42,7 +42,7 @@ def test_build_apps_json_shape() -> None:
     assert out.applied_at.endswith(("Z", "+00:00"))  # ISO UTC
     assert len(out.apps) == 2
     assert out.apps[0]["name"] == "gitea"
-    assert out.apps[0]["ingress_host"] == "gitea.bruj0.net"
+    assert out.apps[0]["ingress_host"] == "gitea.example.net"
     assert out.apps[1]["ingress_host"] is None
 
 
@@ -54,7 +54,7 @@ def test_write_apps_json_creates_file_and_chmods(tmp_path: Path) -> None:
             release="gitea",
             chart_version="12.0.0",
             image_version="1.26.x",
-            ingress_host="gitea.bruj0.net",
+            ingress_host="gitea.example.net",
         ),
     ]
     path = write_apps_json(tmp_path, "cicd", results)
@@ -79,7 +79,7 @@ def test_write_apps_json_creates_parent_dirs(tmp_path: Path) -> None:
             release="gitea",
             chart_version="12.0.0",
             image_version="1.26.x",
-            ingress_host="gitea.bruj0.net",
+            ingress_host="gitea.example.net",
         ),
     ]
     path = write_apps_json(repo, "cicd", results)
@@ -99,7 +99,7 @@ def test_load_apps_json_roundtrips(tmp_path: Path) -> None:
             release="gitea",
             chart_version="12.0.0",
             image_version="1.26.x",
-            ingress_host="gitea.bruj0.net",
+            ingress_host="gitea.example.net",
         ),
     ]
     write_apps_json(tmp_path, "cicd", results)
@@ -133,7 +133,16 @@ def test_apps_json_is_gitignored() -> None:
 
 @pytest.fixture(autouse=True)
 def _chdir_to_repo() -> None:
-    """Some tests read .gitignore from CWD. Make sure we're at the repo root."""
-    os.chdir(
-        "/home/bruj0/projects/proxmox/proxmox-cicd"
-    )
+    """Some tests read .gitignore from CWD. Make sure we're at the repo root.
+
+    We compute the repo root by walking up from this test
+    file's location until we find the .git directory —
+    works regardless of where the test is invoked from.
+    """
+    here = Path(__file__).resolve()
+    for parent in (here, *here.parents):
+        if (parent / ".git").is_dir():
+            os.chdir(parent)
+            return
+    # Fallback: best-effort guess.
+    os.chdir(here.parents[3])

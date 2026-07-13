@@ -26,7 +26,31 @@ set -euo pipefail
 
 NAMESPACE=vaultwarden-kubernetes-secrets
 SECRET_NAME=vaultwarden-kubernetes-secrets
-KUBECONFIG_PATH=${KUBECONFIG:-/home/bruj0/projects/proxmox/proxmox-k3s/infra/clusters/cicd/kubeconfig.yaml}
+# Resolve the cluster's kubeconfig. Resolution order:
+#   1. $KUBECONFIG (already set in the operator's env)
+#   2. $KUBECONFIG_PATH (legacy alias this script
+#      historically used)
+#   3. kubectl's default lookup path ($HOME/.kube/config)
+#   4. the proxmox-k3s sibling repo's per-cluster path
+#      (relative to the proxmox-cicd repo root, so the
+#      script works regardless of where the operator
+#      cloned the repo)
+#
+# We do NOT hardcode the operator's home path. Override
+# KUBECONFIG or KUBECONFIG_PATH in the calling shell to
+# point at a different cluster's kubeconfig.
+KUBECONFIG_PATH="${KUBECONFIG:-${KUBECONFIG_PATH:-}}"
+if [[ -z "$KUBECONFIG_PATH" ]]; then
+  if [[ -f "$HOME/.kube/config" ]]; then
+    KUBECONFIG_PATH="$HOME/.kube/config"
+  else
+    # Sibling proxmox-k3s repo, expected to be a peer
+    # of the proxmox-cicd checkout.
+    _here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    KUBECONFIG_PATH="$_here/../proxmox-k3s/infra/clusters/cicd/kubeconfig.yaml"
+  fi
+fi
+export KUBECONFIG="$KUBECONFIG_PATH"
 
 # Load CLIENT_ID + CLIENT_SECRET from .env if present.
 # .env format: KEY=VALUE, one per line. We accept both the
@@ -66,8 +90,6 @@ fi
 
 read -s -p "Vaultwarden master password: " MASTER_PASSWORD
 echo
-
-export KUBECONFIG="$KUBECONFIG_PATH"
 
 echo ">> Patching Secret $NAMESPACE/$SECRET_NAME ..."
 kubectl -n "$NAMESPACE" create secret generic "$SECRET_NAME" \

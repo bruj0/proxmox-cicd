@@ -23,7 +23,7 @@ Schema (v1, 2026-07-10):
         "release": "gitea",
         "chart_version": "12.0.0",
         "image_version": "1.26.x",
-        "ingress_host": "gitea.bruj0.net"
+        "ingress_host": "gitea.example.net"
       },
       ...
     ]

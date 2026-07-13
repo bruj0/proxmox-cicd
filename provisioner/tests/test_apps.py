@@ -111,13 +111,13 @@ def test_gitea_plan_returns_helm_install_and_httproute(tmp_path: Path) -> None:
     (repo / "values").mkdir(parents=True)
     (repo / "values" / "gitea.yaml").write_text("# placeholder\n")
     ctx = _make_ctx(repo)
-    catalog = {"ingress": {"base_domain": "bruj0.net"}}
+    catalog = {"ingress": {"base_domain": "example.net"}}
 
     result = GiteaApp().plan(ctx, catalog)
     assert result.app_name == "gitea"
     assert any("helm upgrade --install gitea" in s for s in result.would_install)
     assert any("Gateway=gitea" in s for s in result.would_apply)
-    assert "gitea.bruj0.net" in str(result.notes)
+    assert "gitea.example.net" in str(result.notes)
 
 
 # ----------------------------------------------------------- GiteaApp.apply
@@ -135,7 +135,7 @@ def test_gitea_apply_runs_helm_then_kubectl(tmp_path: Path) -> None:
     _write_kubeconfig(k8s / "kubeconfig.yaml")
 
     ctx = _make_ctx(repo)
-    catalog = {"ingress": {"base_domain": "bruj0.net"}}
+    catalog = {"ingress": {"base_domain": "example.net"}}
 
     # Mock helm + kubectl.
     fake_run = MagicMock(return_value=MagicMock(returncode=0, stdout="", stderr=""))
@@ -167,7 +167,7 @@ def test_gitea_apply_runs_helm_then_kubectl(tmp_path: Path) -> None:
     assert isinstance(result, AppApplyResult)
     assert result.app_name == "gitea"
     assert result.namespace == "gitea"
-    assert result.ingress_host == "gitea.bruj0.net"
+    assert result.ingress_host == "gitea.example.net"
 
 
 def test_gitea_apply_fails_when_values_missing(tmp_path: Path) -> None:

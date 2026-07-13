@@ -48,52 +48,55 @@ def test_vaultwarden_k8s_sync_is_registered() -> None:
 # ----------------------------------------------------------- .env parser
 
 
-def test_load_credentials_from_dotenv_missing(tmp_path: Path) -> None:
+def test_load_dotenv_missing(tmp_path: Path) -> None:
     """No .env file => all empty."""
-    creds = VaultwardenK8sSyncApp._load_credentials_from_dotenv(tmp_path)
+    creds = VaultwardenK8sSyncApp._load_dotenv(tmp_path)
     assert creds == {
         "BW_CLIENTID": "",
         "BW_CLIENTSECRET": "",
         "VAULTWARDEN__MASTERPASSWORD": "",
+        "VAULTWARDEN__SERVERURL": "",
     }
 
 
-def test_load_credentials_from_dotenv_uppercase_bw_keys(tmp_path: Path) -> None:
+def test_load_dotenv_uppercase_bw_keys(tmp_path: Path) -> None:
     """Canonical key names (BW_CLIENTID / BW_CLIENTSECRET)."""
     (tmp_path / ".env").write_text(
         "BW_CLIENTID=user.abc\n"
         "BW_CLIENTSECRET=secret\n"
         "VAULTWARDEN__MASTERPASSWORD=mp\n"
+        "VAULTWARDEN__SERVERURL=https://bitwarden.example.net\n"
     )
-    creds = VaultwardenK8sSyncApp._load_credentials_from_dotenv(tmp_path)
+    creds = VaultwardenK8sSyncApp._load_dotenv(tmp_path)
     assert creds == {
         "BW_CLIENTID": "user.abc",
         "BW_CLIENTSECRET": "secret",
         "VAULTWARDEN__MASTERPASSWORD": "mp",
+        "VAULTWARDEN__SERVERURL": "https://bitwarden.example.net",
     }
 
 
-def test_load_credentials_from_dotenv_lowercase_aliases(tmp_path: Path) -> None:
+def test_load_dotenv_lowercase_aliases(tmp_path: Path) -> None:
     """Bitwarden-web-UI-style names (client_id / client_secret)."""
     (tmp_path / ".env").write_text(
         "client_id=user.abc\n"
         "client_secret=secret\n"
     )
-    creds = VaultwardenK8sSyncApp._load_credentials_from_dotenv(tmp_path)
+    creds = VaultwardenK8sSyncApp._load_dotenv(tmp_path)
     assert creds["BW_CLIENTID"] == "user.abc"
     assert creds["BW_CLIENTSECRET"] == "secret"
     # master password still empty.
     assert creds["VAULTWARDEN__MASTERPASSWORD"] == ""
 
 
-def test_load_credentials_from_dotenv_master_aliases(tmp_path: Path) -> None:
+def test_load_dotenv_master_aliases(tmp_path: Path) -> None:
     """VAULTWARDEN_MASTERPASSWORD + master_password are aliases."""
     (tmp_path / ".env").write_text(
         "BW_CLIENTID=user.abc\n"
         "BW_CLIENTSECRET=secret\n"
         "VAULTWARDEN_MASTERPASSWORD=mp1\n"
     )
-    creds = VaultwardenK8sSyncApp._load_credentials_from_dotenv(tmp_path)
+    creds = VaultwardenK8sSyncApp._load_dotenv(tmp_path)
     assert creds["VAULTWARDEN__MASTERPASSWORD"] == "mp1"
 
     (tmp_path / ".env").write_text(
@@ -101,23 +104,39 @@ def test_load_credentials_from_dotenv_master_aliases(tmp_path: Path) -> None:
         "BW_CLIENTSECRET=secret\n"
         "master_password=mp2\n"
     )
-    creds = VaultwardenK8sSyncApp._load_credentials_from_dotenv(tmp_path)
+    creds = VaultwardenK8sSyncApp._load_dotenv(tmp_path)
     assert creds["VAULTWARDEN__MASTERPASSWORD"] == "mp2"
 
 
-def test_load_credentials_from_dotenv_handles_quotes_and_spaces(tmp_path: Path) -> None:
+def test_load_dotenv_serverurl_aliases(tmp_path: Path) -> None:
+    """VAULTWARDEN_URL / BITWARDEN_URL are SERVERURL aliases."""
+    for alias in (
+        "VAULTWARDEN_URL",
+        "BITWARDEN_URL",
+        "VAULTWARDEN_SERVERURL",
+    ):
+        (tmp_path / ".env").write_text(
+            f"{alias}=https://bitwarden.example.net\n"
+        )
+        creds = VaultwardenK8sSyncApp._load_dotenv(tmp_path)
+        assert creds["VAULTWARDEN__SERVERURL"] == (
+            "https://bitwarden.example.net"
+        ), f"alias {alias} should map to VAULTWARDEN__SERVERURL"
+
+
+def test_load_dotenv_handles_quotes_and_spaces(tmp_path: Path) -> None:
     """Value side: trim leading/trailing whitespace + quotes."""
     (tmp_path / ".env").write_text(
         "client_id=   user.abc  \n"
         'client_secret="secret"\n'
         "client_secret_strict='secret2'\n"  # unknown key -> ignored
     )
-    creds = VaultwardenK8sSyncApp._load_credentials_from_dotenv(tmp_path)
+    creds = VaultwardenK8sSyncApp._load_dotenv(tmp_path)
     assert creds["BW_CLIENTID"] == "user.abc"
     assert creds["BW_CLIENTSECRET"] == "secret"
 
 
-def test_load_credentials_from_dotenv_skips_comments_and_blanks(tmp_path: Path) -> None:
+def test_load_dotenv_skips_comments_and_blanks(tmp_path: Path) -> None:
     (tmp_path / ".env").write_text(
         "# a comment\n"
         "\n"
@@ -125,9 +144,45 @@ def test_load_credentials_from_dotenv_skips_comments_and_blanks(tmp_path: Path) 
         "# another comment\n"
         "BW_CLIENTSECRET=secret\n"
     )
-    creds = VaultwardenK8sSyncApp._load_credentials_from_dotenv(tmp_path)
+    creds = VaultwardenK8sSyncApp._load_dotenv(tmp_path)
     assert creds["BW_CLIENTID"] == "user.abc"
     assert creds["BW_CLIENTSECRET"] == "secret"
+
+
+# ----------------------------------------------------------- _render_values
+
+
+def test_render_values_unchanged_without_url(tmp_path: Path) -> None:
+    """No server_url => returns the committed file untouched."""
+    values = tmp_path / "vaultwarden-kubernetes-secrets.yaml"
+    values.write_text(
+        "env:\n  config:\n    VAULTWARDEN__SERVERURL: "
+        '"https://bitwarden.example.net"\n'
+    )
+    out = VaultwardenK8sSyncApp._render_values(values, "")
+    assert out == values
+    assert not (tmp_path / "vaultwarden-kubernetes-secrets.values-rendered.yaml").exists()
+
+
+def test_render_values_overlays_url(tmp_path: Path) -> None:
+    """server_url is set => rendered file has the URL."""
+    values = tmp_path / "vaultwarden-kubernetes-secrets.yaml"
+    values.write_text(
+        "env:\n  config:\n"
+        '    VAULTWARDEN__SERVERURL: "https://bitwarden.example.net"\n'
+        "    OTHER: keep\n"
+    )
+    out = VaultwardenK8sSyncApp._render_values(
+        values, "https://vault.example.com"
+    )
+    assert out != values
+    text = out.read_text()
+    assert '"https://vault.example.com"' in text
+    # The non-overridden line is preserved.
+    assert "OTHER: keep" in text
+    # Clean up so the rendered file doesn't leak
+    # into the cwd.
+    out.unlink()
 
 
 # ----------------------------------------------------------- plan

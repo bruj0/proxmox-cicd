@@ -18,7 +18,7 @@ Ingress:
     The Gateway is anchored to GatewayClass=envoy (from
     stage 2's envoy-gateway controller).
   - The hostname is sourced from `catalog.ingress.base_domain`
-    (e.g. `bruj0.net` -> `gitea.bruj0.net`).
+    (e.g. `example.net` -> `gitea.example.net`).
 
 Pins:
   - chart: oci://docker.gitea.com/charts/gitea:12.0.0

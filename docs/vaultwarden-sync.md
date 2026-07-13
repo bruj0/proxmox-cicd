@@ -153,7 +153,7 @@ Secret + rolls the Deployment directly.
 | `env.config.SYNC__SYNCINTERVALSECONDS` | `values/vaultwarden-kubernetes-secrets.yaml` | `30` | 30s = ~2 min time-to-sync for new items |
 | `env.config.SYNC__DELETEORPHANS` | `values/vaultwarden-kubernetes-secrets.yaml` | `true` | When true, VKS deletes k8s Secrets when their source item is removed |
 | `env.config.SYNC__DRYRUN` | `values/vaultwarden-kubernetes-secrets.yaml` | `false` | Dry-run mode logs what would change but doesn't touch the cluster |
-| `env.config.VAULTWARDEN__SERVERURL` | `values/vaultwarden-kubernetes-secrets.yaml` | `https://bitwarden.bruj0.net` | Override for non-default Vaultwarden |
+| `env.config.VAULTWARDEN__SERVERURL` | `values/vaultwarden-kubernetes-secrets.yaml` (overlaid at apply-time from `VAULTWARDEN__SERVERURL` in `.env` or `catalog.vaultwarden.server_url`) | `https://bitwarden.example.net` (placeholder) | Self-hosted Vaultwarden/Bitwarden server URL |
 | `env.config.VAULTWARDEN__ORGANIZATIONID` | `values/vaultwarden-kubernetes-secrets.yaml` | empty | Filter items by org UUID (empty = all user-scoped items) |
 | `env.config.VAULTWARDEN__COLLECTIONID` | `values/vaultwarden-kubernetes-secrets.yaml` | empty | Filter items by collection UUID |
 | `env.secrets.BW_CLIENTID.secretName` | `values/vaultwarden-kubernetes-secrets.yaml` | `vaultwarden-kubernetes-secrets` | **Must match the Secret name the apply creates** |

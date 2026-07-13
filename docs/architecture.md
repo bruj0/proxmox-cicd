@@ -150,7 +150,7 @@ The registry is reset between tests via
 ```yaml
 cluster_name: cicd                # must match the CLI argument
 ingress:
-  base_domain: bruj0.net          # every app's hostname is
+  base_domain: example.net          # every app's hostname is
                                   # <app>.base_domain
 bitwarden:                       # optional
   organization_id: ""
@@ -190,7 +190,7 @@ After a successful apply, the orchestrator writes
       "release": "gitea",
       "chart_version": "12.0.0",
       "image_version": "1.26.x",
-      "ingress_host": "gitea.bruj0.net"
+      "ingress_host": "gitea.example.net"
     },
     ...
   ]

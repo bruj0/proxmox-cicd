@@ -44,11 +44,10 @@ from typing import Any
 from ..container import Container
 from . import AppApplyResult, AppPlanResult, AppStatus, register
 
-# Chart constants. Pinned to chart 2.0.0 (matches appVersion 2.0.0
-# — the local clone at /home/bruj0/projects/vaultwarden-kubernetes-secrets/
-# has Chart.yaml version 0.1.0 + appVersion "latest", but that's a
-# dev tag; the published chart that the operator should consume is
-# 2.0.0 from the OCI registry).
+# Chart constants. Pinned to chart 2.0.0 (matches appVersion 2.0.0;
+# the chart repo's HEAD may carry a 0.1.0 + "latest" dev tag, but
+# the published chart that the operator should consume is 2.0.0 from
+# the OCI registry).
 REPO_NAME = "vaultwarden-kubernetes-secrets"
 CHART = "oci://ghcr.io/antoniolago/charts/vaultwarden-kubernetes-secrets"
 CHART_VERSION = "2.0.0"  # pinned in versions.yaml
@@ -110,14 +109,38 @@ class VaultwardenK8sSyncApp:
             )
 
         # Resolve the (BW_CLIENTID, BW_CLIENTSECRET,
-        # VAULTWARDEN__MASTERPASSWORD) triple from a local
-        # .env file in the operator's CWD, if one exists.
-        # All three keys are required by the chart's
-        # `env.secrets` secretKeyRef (optional: false) — so
-        # we either seed them all or we seed none.
-        creds = self._load_credentials_from_dotenv(
-            ctx.repo_root
+        # VAULTWARDEN__MASTERPASSWORD) triple + the
+        # VAULTWARDEN__SERVERURL from a local .env file in
+        # the operator's CWD, if one exists. The URL is
+        # also fall-back-able to catalog["vaultwarden"].
+        dotenv = self._load_dotenv(ctx.repo_root)
+
+        # Resolution order for the server URL:
+        #   1. .env VAULTWARDEN__SERVERURL (preferred)
+        #   2. catalog.vaultwarden.server_url
+        #   3. the values file's placeholder (last resort)
+        server_url = (
+            dotenv.get("VAULTWARDEN__SERVERURL", "")
+            or (catalog.get("vaultwarden", {}) or {}).get(
+                "server_url", ""
+            )
+            or ""
         )
+
+        # Render the values file with the operator's URL
+        # overlaid. We never modify the committed values
+        # file in-place; instead we write a sibling
+        # `.values-rendered.yaml` next to the operator's
+        # kubeconfig (per-cluster, runtime state).
+        rendered_values = self._render_values(values, server_url)
+
+        creds = {
+            "BW_CLIENTID": dotenv.get("BW_CLIENTID", ""),
+            "BW_CLIENTSECRET": dotenv.get("BW_CLIENTSECRET", ""),
+            "VAULTWARDEN__MASTERPASSWORD": dotenv.get(
+                "VAULTWARDEN__MASTERPASSWORD", ""
+            ),
+        }
 
         ctx.logger.info(
             "vaultwarden_k8s_sync.helm_install_started",
@@ -125,6 +148,11 @@ class VaultwardenK8sSyncApp:
             namespace=NAMESPACE,
             chart_version=CHART_VERSION,
             chart=CHART,
+            server_url_source=(
+                "env"
+                if dotenv.get("VAULTWARDEN__SERVERURL")
+                else "catalog" if server_url else "values"
+            ),
             credentials_source=(
                 ".env" if creds["BW_CLIENTID"] else "manual"
             ),
@@ -141,7 +169,7 @@ class VaultwardenK8sSyncApp:
             chart=CHART,
             namespace=NAMESPACE,
             version=CHART_VERSION,
-            values_files=(values,),
+            values_files=(rendered_values,),
             timeout_s=300.0,
             extra_args=("--wait=false",),
         )
@@ -279,9 +307,9 @@ class VaultwardenK8sSyncApp:
             # right org/collection.
             next_step_msg = (
                 f"credentials auto-seeded from .env. Verify "
-                f"the sync service has reach to "
-                f"https://bitwarden.bruj0.net and that the "
-                f"operator id (VAULTWARDEN__ORGANIZATIONID / "
+                f"the sync service has reach to {server_url} "
+                f"and that the operator id "
+                f"(VAULTWARDEN__ORGANIZATIONID / "
                 f"VAULTWARDEN__COLLECTIONID in values.yaml) "
                 f"is set before turning on the dashboard. "
                 f"kubectl -n {NAMESPACE} logs -l "
@@ -362,20 +390,22 @@ class VaultwardenK8sSyncApp:
         )
 
     @staticmethod
-    def _load_credentials_from_dotenv(repo_root: Path) -> dict[str, str]:
-        """Best-effort read of BW_CLIENTID, BW_CLIENTSECRET, and
-        VAULTWARDEN__MASTERPASSWORD from a `.env` file in
-        `repo_root` (typically the operator's CWD when running
-        cicdctl). All three values may be missing/empty — the
-        caller is responsible for surfacing a next-step when
-        that's the case.
+    def _load_dotenv(repo_root: Path) -> dict[str, str]:
+        """Best-effort read of the VKS-relevant keys from a
+        `.env` file in `repo_root` (typically the operator's
+        CWD when running cicdctl).
 
-        Accepted key names (case-insensitive):
+        Accepted key names (case-insensitive, all aliased to
+        their canonical VKS form):
           - BW_CLIENTID  / CLIENT_ID         -> BW_CLIENTID
           - BW_CLIENTSECRET / CLIENT_SECRET  -> BW_CLIENTSECRET
           - VAULTWARDEN__MASTERPASSWORD /
             VAULTWARDEN_MASTERPASSWORD /
             MASTER_PASSWORD                  -> VAULTWARDEN__MASTERPASSWORD
+          - VAULTWARDEN__SERVERURL /
+            VAULTWARDEN_SERVERURL /
+            VAULTWARDEN_URL /
+            BITWARDEN_URL                    -> VAULTWARDEN__SERVERURL
 
         We parse with stdlib only (no python-dotenv dep). Format
         is a one-per-line KEY=VALUE pair (no quoting/escape
@@ -387,6 +417,7 @@ class VaultwardenK8sSyncApp:
             "BW_CLIENTID": "",
             "BW_CLIENTSECRET": "",
             "VAULTWARDEN__MASTERPASSWORD": "",
+            "VAULTWARDEN__SERVERURL": "",
         }
         if not env_path.exists():
             return out
@@ -398,6 +429,10 @@ class VaultwardenK8sSyncApp:
             "vaultwarden__masterpassword": "VAULTWARDEN__MASTERPASSWORD",
             "vaultwarden_masterpassword": "VAULTWARDEN__MASTERPASSWORD",
             "master_password": "VAULTWARDEN__MASTERPASSWORD",
+            "vaultwarden__serverurl": "VAULTWARDEN__SERVERURL",
+            "vaultwarden_serverurl": "VAULTWARDEN__SERVERURL",
+            "vaultwarden_url": "VAULTWARDEN__SERVERURL",
+            "bitwarden_url": "VAULTWARDEN__SERVERURL",
         }
         for raw in env_path.read_text().splitlines():
             line = raw.strip()
@@ -413,6 +448,59 @@ class VaultwardenK8sSyncApp:
                 out[canonical] = value
         return out
 
+    @staticmethod
+    def _render_values(
+        committed_values: Path, server_url: str
+    ) -> Path:
+        """Build a runtime values file with the operator's
+        `VAULTWARDEN__SERVERURL` overlaid on top of the
+        committed values file. Writes a sibling
+        `vaultwarden-kubernetes-secrets.values-rendered.yaml`
+        next to the committed file in `values/` (operator-
+        local — the file should be added to .gitignore
+        or cleaned up by `git clean -fX values/`). Falls
+        back to the committed file unchanged if no URL
+        was supplied.
+        """
+        if not server_url:
+            return committed_values
+        # We use a simple textual replacement because the
+        # committed file is a flat YAML fragment with
+        # predictable formatting; full YAML re-encoding
+        # would risk losing comments + the chart's
+        # secretKeyRef anchor block.
+        text = committed_values.read_text()
+        new_line = f'    VAULTWARDEN__SERVERURL: "{server_url}"'
+        if 'VAULTWARDEN__SERVERURL:' in text:
+            out_lines: list[str] = []
+            replaced = False
+            for raw in text.splitlines(keepends=True):
+                stripped = raw.lstrip()
+                if (
+                    not replaced
+                    and stripped.startswith("VAULTWARDEN__SERVERURL:")
+                ):
+                    out_lines.append(new_line + "\n")
+                    replaced = True
+                else:
+                    out_lines.append(raw)
+            text = "".join(out_lines)
+        else:
+            # Append a top-level env.config block. The
+            # chart treats `env.config` as a dict, so this
+            # is safe to add.
+            text += (
+                "\n# Auto-added by vaultwarden_k8s_sync.apply():\n"
+                "env:\n"
+                "  config:\n"
+                f"{new_line}\n"
+            )
+        out_path = committed_values.with_name(
+            committed_values.stem + ".values-rendered.yaml"
+        )
+        out_path.write_text(text)
+        return out_path
+
     def _kubectl(self, ctx: Container) -> Any:
         # Late import to avoid a circular dep at module load.
         from ..kubectl_runner import KubectlRunner
@@ -420,9 +508,19 @@ class VaultwardenK8sSyncApp:
         if ctx.kubectl is not None:
             return ctx.kubectl
         from ..kubeconfig_loader import Kubeconfig, load
+        import os
 
-        cluster = "cicd"
-        path = ctx.proxmox_k3s_repo / "infra" / "clusters" / cluster / "kubeconfig.yaml"
+        # Resolve the cluster name from the env var the
+        # orchestrator sets. Falls back to "cicd" so the
+        # AppSpec remains usable from a test fixture.
+        cluster = os.environ.get("PROXMOX_CICD_CLUSTER", "cicd")
+        path = (
+            ctx.proxmox_k3s_repo
+            / "infra"
+            / "clusters"
+            / cluster
+            / "kubeconfig.yaml"
+        )
         kubeconfig: Kubeconfig = load(path)
         kubectl = KubectlRunner(kubeconfig=kubeconfig, logger=ctx.logger)
         ctx.kubectl = kubectl
