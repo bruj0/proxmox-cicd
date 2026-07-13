@@ -1,19 +1,29 @@
-# infra/clusters/cicd/catalog.yaml — operator-edited
-# configuration for the cicd cluster's app catalog.
+# infra/clusters/<name>/catalog.yaml — operator-edited
+# configuration for the <name> cluster's app catalog.
 #
 # The orchestrator reads this file at every cicdctl invocation.
-# `cicdctl validate cicd` parses it without touching the cluster;
-# `cicdctl plan cicd` adds the live-state diff.
+# `cicdctl validate <name>` parses it without touching the
+# cluster; `cicdctl plan <name>` adds the live-state diff.
+#
+# Note: this file is operator-local. The committed template
+# lives at infra/clusters/catalog.yaml.example. After
+# `tofu apply` brings up the cluster, `cp` the example into
+# place at infra/clusters/<name>/catalog.yaml and edit the
+# `cluster_name`, `ingress.base_domain`, and
+# `vaultwarden.server_url` values to match your environment.
 #
 # Schema (v2, 2026-07-13):
 #
 #   cluster_name:    must match the CLI argument exactly
 #   ingress:         base_domain -> every app's hostname is
-#                    <app>.base_domain (gitea becomes
-#                    gitea.bruj0.net).
+#                    <app>.base_domain (e.g. gitea becomes
+#                    gitea.example.net).
 #   vaultwarden:     optional. self-hosted Vaultwarden/Bitwarden
 #                    server URL. Empty values disable the
-#                    vaultwarden-k8s-sync app.
+#                    vaultwarden-k8s-sync app. The orchestrator
+#                    overlays VAULTWARDEN__SERVERURL from .env
+#                    over this value at apply-time, so the .env
+#                    source takes precedence.
 #   apps:            a mapping of app_name -> {enabled, ...}.
 #                    Apps not listed here are skipped (but
 #                    still installed apps appear in `status`).
@@ -27,7 +37,7 @@ ingress:
   # Replace with your real public domain. The orchestrator
   # will create a Gateway + HTTPRoute for each enabled app
   # that exposes an `ingress_host`.
-  base_domain: bruj0.net
+  base_domain: example.net
 
 # Vaultwarden / Bitwarden server URL. The vaultwarden-k8s-sync
 # app reads this and points the sync service at it. Empty ->
@@ -35,7 +45,9 @@ ingress:
 # to provide VAULTWARDEN__SERVERURL via env or values).
 vaultwarden:
   # Self-hosted Vaultwarden URL (bitwarden-compatible).
-  server_url: "https://bitwarden.bruj0.net"
+  # Overlaid at apply-time with VAULTWARDEN__SERVERURL from
+  # .env if that key is set.
+  server_url: "https://bitwarden.example.net"
 
 apps:
   # Self-hosted Git + Actions + Packages. The user-facing
