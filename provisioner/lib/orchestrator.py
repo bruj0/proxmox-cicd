@@ -58,12 +58,19 @@ class Orchestrator:
 
     def validate(self, cluster: str) -> int:
         """Parse catalog + check values files exist. No kubectl/helm."""
+        log = self.container.logger
+        log.info("validate.started", cluster=cluster)
         try:
             catalog = load_catalog(self._catalog_path(cluster), cluster)
             validate_enabled_apps_exist(
                 catalog, [a.name for a in all_apps()]
             )
         except CatalogError as exc:
+            log.error(
+                "validate.catalog_failed",
+                error=str(exc),
+                resolution="fix infra/clusters/<name>/catalog.yaml",
+            )
             print(f"validate failed: {exc}")
             return EXIT_VALIDATE
         # Probe values files for each enabled app.
@@ -86,12 +93,20 @@ class Orchestrator:
                 # warn; the app's apply() will tell you if
                 # one is required.
                 pass
+        log.info(
+            "validate.finished",
+            cluster=cluster,
+            apps=catalog.enabled_app_names(),
+            result="ok",
+        )
         print(f"validate ok: cluster={cluster} apps={catalog.enabled_app_names()}")
         return EXIT_OK
 
     # ------------------------------------------------------ plan
 
     def plan(self, cluster: str) -> int:
+        log = self.container.logger
+        log.info("plan.started", cluster=cluster)
         try:
             self._set_cluster_env(cluster)
             plan_diff = build_plan(
@@ -100,14 +115,28 @@ class Orchestrator:
                 self._catalog_path(cluster),
             )
         except CatalogError as exc:
+            log.error(
+                "plan.catalog_failed",
+                error=str(exc),
+                resolution="fix infra/clusters/<name>/catalog.yaml",
+            )
             print(f"plan failed: {exc}")
             return EXIT_CATALOG
+        log.info(
+            "plan.finished",
+            cluster=cluster,
+            errors=plan_diff.errors,
+            apps=len(plan_diff.rows),
+            skipped=plan_diff.skipped,
+        )
         print(plan_diff.render())
         return EXIT_OK if not plan_diff.errors else EXIT_PLAN
 
     # ------------------------------------------------------ apply
 
     def apply(self, cluster: str) -> int:
+        log = self.container.logger
+        log.info("apply.started", cluster=cluster)
         try:
             self._set_cluster_env(cluster)
             catalog = load_catalog(self._catalog_path(cluster), cluster)
@@ -115,8 +144,19 @@ class Orchestrator:
                 catalog, [a.name for a in all_apps()]
             )
         except CatalogError as exc:
+            log.error(
+                "apply.catalog_failed",
+                error=str(exc),
+                resolution="fix infra/clusters/<name>/catalog.yaml",
+            )
             print(f"apply failed: {exc}")
             return EXIT_CATALOG
+
+        log.info(
+            "apply.catalog_loaded",
+            cluster=cluster,
+            apps=catalog.enabled_app_names(),
+        )
 
         # Pre-flight: kubectl + helm on PATH, kubeconfig exists.
         from .kubectl_runner import helm_on_path, kubectl_on_path
@@ -142,19 +182,58 @@ class Orchestrator:
         for name in catalog.enabled_app_names():
             app_cls = registry.get(name)
             if app_cls is None:
+                log.warn(
+                    "apply.app_skipped",
+                    app=name,
+                    resolution="register the app via @register decorator",
+                )
                 print(f"  ! {name}: not in registry, skipping")
                 continue
+            log.info("apply.app_started", app=name)
             print(f"  -> applying {name}...")
             try:
                 result = app_cls().apply(self.container, catalog_dict)
                 applied.append(result)
+                log.info(
+                    "apply.app_completed",
+                    app=name,
+                    namespace=result.namespace,
+                    release=result.release,
+                    chart_version=result.chart_version,
+                    image_version=result.image_version,
+                    ingress_host=result.ingress_host,
+                    next_step=result.next_step,
+                )
                 print(
                     f"     ok: namespace={result.namespace} "
                     f"release={result.release} "
                     f"chart={result.chart_version} "
                     f"image={result.image_version}"
                 )
+                # If the app returned an ingress_host, surface
+                # the URL right after the install line — the
+                # operator's terminal is the primary UI, not
+                # the audit log.
+                if result.ingress_host:
+                    print(
+                        f"     ingress: https://{result.ingress_host}"
+                    )
+                # If the app returned a post-apply `next_step`,
+                # surface it here so the operator sees the
+                # manual follow-up without having to tail the
+                # audit log. The `apply()` method is the
+                # canonical place to set this (apps own their
+                # own "what's next" story; the orchestrator
+                # just prints it).
+                if result.next_step:
+                    print(f"     next: {result.next_step}")
             except Exception as exc:  # noqa: BLE001
+                log.error(
+                    "apply.app_failed",
+                    app=name,
+                    error=repr(exc),
+                    resolution="see the audit log for the failing step",
+                )
                 print(f"     FAILED: {exc!r}")
                 # Write the partial apps.json so the operator
                 # can see what succeeded.
@@ -163,12 +242,20 @@ class Orchestrator:
 
         # Write apps.json handoff for downstream consumers.
         self._write_apps_json(cluster, applied)
+        log.info(
+            "apply.finished",
+            cluster=cluster,
+            apps_installed=[a.app_name for a in applied],
+            count=len(applied),
+        )
         print(f"apply complete: {len(applied)} apps installed")
         return EXIT_OK
 
     # ------------------------------------------------------ destroy
 
     def destroy(self, cluster: str) -> int:
+        log = self.container.logger
+        log.info("destroy.started", cluster=cluster)
         try:
             self._set_cluster_env(cluster)
             catalog = load_catalog(self._catalog_path(cluster), cluster)
@@ -176,6 +263,11 @@ class Orchestrator:
                 catalog, [a.name for a in all_apps()]
             )
         except CatalogError as exc:
+            log.error(
+                "destroy.catalog_failed",
+                error=str(exc),
+                resolution="fix infra/clusters/<name>/catalog.yaml",
+            )
             print(f"destroy failed: {exc}")
             return EXIT_CATALOG
 
@@ -188,11 +280,18 @@ class Orchestrator:
             app_cls = registry.get(name)
             if app_cls is None:
                 continue
+            log.info("destroy.app_started", app=name)
             print(f"  -> destroying {name}...")
             try:
                 app_cls().destroy(self.container, catalog.as_dict())
+                log.info("destroy.app_completed", app=name)
                 print("     ok")
             except Exception as exc:  # noqa: BLE001
+                log.error(
+                    "destroy.app_failed",
+                    app=name,
+                    error=repr(exc),
+                )
                 print(f"     FAILED: {exc!r}")
                 # Continue destroying the rest.
         # Remove the handoff.
@@ -205,11 +304,14 @@ class Orchestrator:
         )
         if apps_json.exists():
             apps_json.unlink()
+        log.info("destroy.finished", cluster=cluster)
         return EXIT_OK
 
     # ------------------------------------------------------ status
 
     def status(self, cluster: str) -> int:
+        log = self.container.logger
+        log.info("status.started", cluster=cluster)
         try:
             self._set_cluster_env(cluster)
             catalog = load_catalog(self._catalog_path(cluster), cluster)
@@ -217,6 +319,11 @@ class Orchestrator:
                 catalog, [a.name for a in all_apps()]
             )
         except CatalogError as exc:
+            log.error(
+                "status.catalog_failed",
+                error=str(exc),
+                resolution="fix infra/clusters/<name>/catalog.yaml",
+            )
             print(f"status failed: {exc}")
             return EXIT_CATALOG
 
@@ -226,6 +333,7 @@ class Orchestrator:
             app_cls = registry.get(name)
             if app_cls is None:
                 continue
+            log.info("status.app_probed", app=name)
             try:
                 s = app_cls().status(self.container, catalog.as_dict())
                 rows.append(
@@ -237,13 +345,27 @@ class Orchestrator:
                         s.image_version or "-",
                     )
                 )
+                log.info(
+                    "status.app_completed",
+                    app=name,
+                    release_present=s.release_present,
+                    chart_version=s.chart_version,
+                    image_version=s.image_version,
+                    notes=s.notes,
+                )
                 for n in s.notes:
                     rows.append(("", "  note: " + n, "", "", ""))
             except Exception as exc:  # noqa: BLE001
+                log.error(
+                    "status.app_failed",
+                    app=name,
+                    error=repr(exc),
+                )
                 rows.append((name, "?", "error", "-", str(exc)[:40]))
 
         # Pretty-print as a table.
         if not rows:
+            log.info("status.finished", cluster=cluster, apps=0)
             print("no apps to report")
             return EXIT_OK
         widths = [20, 24, 9, 10, 14]
@@ -260,6 +382,11 @@ class Orchestrator:
                 f"{r[2]:<{widths[2]}} {r[3]:<{widths[3]}} "
                 f"{r[4]:<{widths[4]}}"
             )
+        log.info(
+            "status.finished",
+            cluster=cluster,
+            apps_probed=len(rows),
+        )
         return EXIT_OK
 
     # ------------------------------------------------------ helpers

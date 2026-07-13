@@ -110,9 +110,17 @@ def main() -> int:
     orch = container.orchestrator
     assert orch is not None  # production() always sets it
 
+    container.logger.info(
+        "cli.started",
+        command=args.command,
+        cluster=args.cluster,
+        proxmox_k3s_repo=str(args.proxmox_k3s_repo),
+    )
+
+    exit_code = EXIT_PREREQ
     if args.command == "plan":
-        return int(orch.plan(args.cluster))
-    if args.command == "apply":
+        exit_code = orch.plan(args.cluster)
+    elif args.command == "apply":
         if not args.auto_approve:
             print(
                 f"About to install app catalog for cluster "
@@ -120,8 +128,8 @@ def main() -> int:
             )
             print("Pass --auto-approve to skip this prompt.")
             sys.exit(EXIT_OK)
-        return int(orch.apply(args.cluster))
-    if args.command == "destroy":
+        exit_code = orch.apply(args.cluster)
+    elif args.command == "destroy":
         if not args.auto_approve:
             print(
                 f"About to DESTROY app catalog for cluster "
@@ -129,14 +137,21 @@ def main() -> int:
             )
             print("Pass --auto-approve to skip this prompt.")
             sys.exit(EXIT_OK)
-        return int(orch.destroy(args.cluster))
-    if args.command == "status":
-        return int(orch.status(args.cluster))
-    if args.command == "validate":
-        return int(orch.validate(args.cluster))
+        exit_code = orch.destroy(args.cluster)
+    elif args.command == "status":
+        exit_code = orch.status(args.cluster)
+    elif args.command == "validate":
+        exit_code = orch.validate(args.cluster)
+    else:
+        parser.error(f"unknown command: {args.command}")
 
-    parser.error(f"unknown command: {args.command}")
-    return EXIT_PREREQ
+    container.logger.info(
+        "cli.finished",
+        command=args.command,
+        cluster=args.cluster,
+        exit_code=exit_code,
+    )
+    return int(exit_code)
 
 
 if __name__ == "__main__":

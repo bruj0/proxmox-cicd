@@ -216,6 +216,13 @@ class GiteaRunnerApp:
             )
 
         # 3. helm install the local chart.
+        # Note: we pass --wait=false because the runner pod
+        # doesn't go Ready until the gitea-runner-config
+        # Secret has a real registration token. When Bitwarden
+        # is wired up, the BitwardenSecret CR reconciles into
+        # that Secret asynchronously — well after this helm
+        # call returns. Forcing --wait here would fail the
+        # apply on a fresh install.
         result = ctx.helm.install_or_upgrade(
             release=RELEASE,
             chart=str(chart_dir),
@@ -223,6 +230,7 @@ class GiteaRunnerApp:
             version=CHART_VERSION,
             values_files=values_for_helm,
             timeout_s=300.0,
+            extra_args=("--wait=false",),
         )
         if result.returncode != 0:
             raise RuntimeError(
@@ -249,6 +257,78 @@ class GiteaRunnerApp:
             )
             # We don't raise — the runner may take a while to
             # register on a fresh Gitea instance.
+
+        # 5. Codify the registration-token contract. Whether
+        #    Bitwarden is wired or not, we explicitly upsert
+        #    the gitea-runner-config Secret so the runner pod
+        #    has a deterministic starting state. When
+        #    Bitwarden is disabled, the token is empty and
+        #    the runner loops until the operator supplies one
+        #    (documented in the post-apply next-step). When
+        #    Bitwarden is enabled, the BitwardenSecret CR
+        #    reconciles into this same Secret asynchronously.
+        secret_yaml = (
+            "apiVersion: v1\n"
+            "kind: Secret\n"
+            "metadata:\n"
+            f"  name: {RUNNER_CONFIG_SECRET}\n"
+            f"  namespace: {NAMESPACE}\n"
+            "type: Opaque\n"
+            "stringData:\n"
+            "  registrationToken: \"\"\n"
+        )
+        secret_apply = kubectl.apply(
+            manifest=secret_yaml,
+            namespace=NAMESPACE,
+            server_side=True,
+        )
+        if secret_apply.returncode != 0:
+            raise RuntimeError(
+                f"kubectl apply Secret={RUNNER_CONFIG_SECRET} "
+                f"failed: rc={secret_apply.returncode} "
+                f"stderr={secret_apply.stderr.strip()[:500]}"
+            )
+        ctx.logger.info(
+            "gitea_runner.config_secret_seeded",
+            secret=RUNNER_CONFIG_SECRET,
+            namespace=NAMESPACE,
+            token_source=("bitwarden" if org_id and bw_sid else "operator_manual"),
+        )
+
+        # 6. Post-apply next step. Always surfaced so the
+        #    operator knows what to do once the install
+        #    finishes. When Bitwarden is wired, this is
+        #    automatic; otherwise the operator must fetch a
+        #    token from Gitea and update the Secret.
+        if org_id and bw_sid:
+            ctx.logger.info(
+                "gitea_runner.ready_for_registration",
+                bitwarden_organization_id=org_id,
+                bitwarden_secret_id=bw_sid,
+                next_step=(
+                    "BitwardenSecret CR applied; the sm-operator "
+                    "will reconcile a real registration token into "
+                    f"secret {RUNNER_CONFIG_SECRET} in the next "
+                    "sync cycle (typically < 60s)."
+                ),
+            )
+        else:
+            ctx.logger.info(
+                "gitea_runner.waiting_for_token",
+                next_step=(
+                    "open https://gitea.<base_domain> in a browser "
+                    "and finish first-boot (set admin password), "
+                    "then Site Administration -> Actions -> Runners "
+                    "-> Create new runner. Copy the registration "
+                    "token and update the Secret: "
+                    f"`kubectl -n {NAMESPACE} create secret "
+                    f"generic {RUNNER_CONFIG_SECRET} "
+                    "--from-literal=registrationToken=<TOKEN> "
+                    "--dry-run=client -o yaml | kubectl apply -f -`. "
+                    "The runner pod will pick up the new token "
+                    "within ~30s."
+                ),
+            )
 
         return AppApplyResult(
             app_name=self.name,
@@ -311,7 +391,9 @@ class GiteaRunnerApp:
         cluster = os.environ.get("PROXMOX_CICD_CLUSTER", "cicd")
         path = ctx.proxmox_k3s_repo / "infra" / "clusters" / cluster / "kubeconfig.yaml"
         kubeconfig: Kubeconfig = load(path)
-        return KubectlRunner(kubeconfig=kubeconfig)
+        kubectl = KubectlRunner(kubeconfig=kubeconfig, logger=ctx.logger)
+        ctx.kubectl = kubectl
+        return kubectl
 
 
 # Side-effect import: register on import.

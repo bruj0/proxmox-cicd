@@ -35,6 +35,14 @@ class AppPlanResult:
 class AppApplyResult:
     """What `AppSpec.apply()` returns: the audit-log-friendly
     summary of what was actually done.
+
+    `next_step` is the operator-facing follow-up message:
+    surfaced verbatim by the orchestrator right after the
+    install line. Apps that complete fully (no manual
+    intervention) leave it as None. Apps that need a
+    follow-up action from the operator (e.g. the Gitea
+    runner can't register until the user pastes a token)
+    populate it with a one-sentence call to action.
     """
 
     app_name: str
@@ -43,6 +51,7 @@ class AppApplyResult:
     chart_version: str
     image_version: str
     ingress_host: str | None = None
+    next_step: str | None = None
 
 
 @dataclass
