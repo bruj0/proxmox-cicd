@@ -101,7 +101,7 @@ def test_validate_enabled_apps_exist_raises_on_unknown(tmp_path: Path) -> None:
         ingress_base_domain="bruj0.net",
     )
     with pytest.raises(CatalogError) as ei:
-        validate_enabled_apps_exist(catalog, ["gitea", "bitwarden-sm-operator"])
+        validate_enabled_apps_exist(catalog, ["gitea", "vaultwarden-k8s-sync"])
     assert "unknown-app" in str(ei.value)
 
 
@@ -112,7 +112,7 @@ def test_validate_enabled_apps_exist_passes_when_known() -> None:
         ingress_base_domain="bruj0.net",
     )
     # Should not raise.
-    validate_enabled_apps_exist(catalog, ["gitea", "bitwarden-sm-operator"])
+    validate_enabled_apps_exist(catalog, ["gitea", "vaultwarden-k8s-sync"])
 
 
 def test_catalog_as_dict_shape(tmp_path: Path) -> None:
@@ -121,8 +121,8 @@ def test_catalog_as_dict_shape(tmp_path: Path) -> None:
         "cluster_name: cicd\n"
         "ingress:\n"
         "  base_domain: bruj0.net\n"
-        "bitwarden:\n"
-        "  organization_id: org-123\n"
+        "vaultwarden:\n"
+        "  server_url: https://bitwarden.bruj0.net\n"
         "apps:\n"
         "  gitea:\n"
         "    enabled: true\n"
@@ -130,7 +130,7 @@ def test_catalog_as_dict_shape(tmp_path: Path) -> None:
     catalog = load_catalog(catalog_path, "cicd")
     d = catalog.as_dict()
     assert d["ingress"]["base_domain"] == "bruj0.net"
-    assert d["bitwarden"]["organization_id"] == "org-123"
+    assert d["vaultwarden"]["server_url"] == "https://bitwarden.bruj0.net"
     assert d["apps"]["gitea"]["enabled"] is True
 
 
@@ -209,23 +209,14 @@ def test_orchestrator_apply_returns_zero_on_full_mocks(tmp_path: Path) -> None:
         "ingress:\n"
         "  base_domain: bruj0.net\n"
         "apps:\n"
-        "  bitwarden-sm-operator:\n"
+        "  vaultwarden-k8s-sync:\n"
         "    enabled: true\n"
         "  gitea:\n"
         "    enabled: true\n",
     )
     # Lay down the values files the apps need.
     (tmp_path / "values" / "gitea.yaml").write_text("# ok\n")
-    (tmp_path / "values" / "bitwarden-sm-operator.yaml").write_text("# ok\n")
-    # Mock kubectl.get to return "no CRD" so bitwarden_sm
-    # doesn't complain (and gitea doesn't probe CRDs).
-    container.kubectl.get = MagicMock(
-        return_value=MagicMock(
-            returncode=0,
-            stdout="bitwardensecrets.k8s.bitwarden.com",
-            stderr="",
-        )
-    )
+    (tmp_path / "values" / "vaultwarden-kubernetes-secrets.yaml").write_text("# ok\n")
     container.kubectl.wait_deployments_available = MagicMock(
         return_value=MagicMock(returncode=0, stdout="", stderr="")
     )
@@ -301,14 +292,14 @@ def test_orchestrator_does_not_import_app_specific_symbols() -> None:
     # the apps package is the AppSpec Protocol + AppApplyResult
     # dataclass (used as a type hint) + all_apps registry.
     # No `from .apps.gitea` / `from .apps.gitea_runner` /
-    # `from .apps.bitwarden_sm` imports.
+    # `from .apps.vaultwarden_k8s_sync` imports.
     for forbidden in (
         "from .apps.gitea",
         "from .apps.gitea_runner",
-        "from .apps.bitwarden_sm",
+        "from .apps.vaultwarden_k8s_sync",
         "from provisioner.lib.apps.gitea",
         "from provisioner.lib.apps.gitea_runner",
-        "from provisioner.lib.apps.bitwarden_sm",
+        "from provisioner.lib.apps.vaultwarden_k8s_sync",
     ):
         assert forbidden not in src, (
             f"orchestrator.py imports {forbidden!r}; this "
@@ -329,10 +320,10 @@ def _clean_registry(monkeypatch: pytest.MonkeyPatch) -> None:
 
     from provisioner.lib.apps import gitea as gitea_mod
     from provisioner.lib.apps import gitea_runner as gr_mod
-    from provisioner.lib.apps import bitwarden_sm as bw_mod
+    from provisioner.lib.apps import vaultwarden_k8s_sync as vks_mod
 
     importlib.reload(gitea_mod)
     importlib.reload(gr_mod)
-    importlib.reload(bw_mod)
+    importlib.reload(vks_mod)
     yield
     reset_registry()

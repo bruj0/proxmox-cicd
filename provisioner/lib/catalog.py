@@ -9,15 +9,14 @@ Shape (YAML, parsed narrowly with stdlib regex):
   cluster_name: cicd
   ingress:
     base_domain: bruj0.net      # gitea becomes gitea.bruj0.net
-  bitwarden:
-    organization_id: 00000000-0000-0000-0000-000000000001
-    runner_secret_id: 00000000-0000-0000-0000-000000000002
+  vaultwarden:
+    server_url: https://bitwarden.bruj0.net
   apps:
     gitea:
       enabled: true
     gitea-runner:
       enabled: true
-    bitwarden-sm-operator:
+    vaultwarden-k8s-sync:
       enabled: true
 
 Validation rules:
@@ -54,8 +53,7 @@ class Catalog:
     cluster_name: str
     apps: dict[str, AppConfig]
     ingress_base_domain: str
-    bitwarden_organization_id: str = ""
-    bitwarden_runner_secret_id: str = ""
+    vaultwarden_server_url: str = ""
     source_path: Path | None = None
 
     def enabled_app_names(self) -> list[str]:
@@ -68,10 +66,7 @@ class Catalog:
         return {
             "cluster_name": self.cluster_name,
             "ingress": {"base_domain": self.ingress_base_domain},
-            "bitwarden": {
-                "organization_id": self.bitwarden_organization_id,
-                "runner_secret_id": self.bitwarden_runner_secret_id,
-            },
+            "vaultwarden": {"server_url": self.vaultwarden_server_url},
             "apps": {
                 name: {"enabled": cfg.enabled, **cfg.extra}
                 for name, cfg in self.apps.items()
@@ -211,17 +206,13 @@ def load_catalog(path: Path, cluster_name: str) -> Catalog:
             f"a valid DNS label"
         )
 
-    # bitwarden.* (optional but recorded)
-    bw = parsed.get("bitwarden", {})
-    bw_org = ""
-    bw_runner = ""
-    if isinstance(bw, dict):
-        v = bw.get("organization_id", "")
+    # vaultwarden.* (optional but recorded)
+    vw = parsed.get("vaultwarden", {})
+    vw_url = ""
+    if isinstance(vw, dict):
+        v = vw.get("server_url", "")
         if isinstance(v, str):
-            bw_org = v
-        v = bw.get("runner_secret_id", "")
-        if isinstance(v, str):
-            bw_runner = v
+            vw_url = v
 
     # apps.*
     apps_raw = parsed.get("apps", {})
@@ -262,8 +253,7 @@ def load_catalog(path: Path, cluster_name: str) -> Catalog:
         cluster_name=cluster_name,
         apps=apps,
         ingress_base_domain=base_domain,
-        bitwarden_organization_id=bw_org,
-        bitwarden_runner_secret_id=bw_runner,
+        vaultwarden_server_url=vw_url,
         source_path=path,
     )
 

@@ -28,11 +28,11 @@ def test_build_apps_json_shape() -> None:
             ingress_host="gitea.bruj0.net",
         ),
         AppApplyResult(
-            app_name="bitwarden-sm-operator",
-            namespace="sm-operator-system",
-            release="sm-operator",
-            chart_version="0.4.0",
-            image_version="0.4.0",
+            app_name="vaultwarden-k8s-sync",
+            namespace="vaultwarden-kubernetes-secrets",
+            release="vaultwarden-kubernetes-secrets",
+            chart_version="2.0.0",
+            image_version="2.0.0",
             ingress_host=None,
         ),
     ]

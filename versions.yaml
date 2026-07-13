@@ -54,23 +54,23 @@ gitea_runner:
       source: "https://docs.gitea.com/runner/1.0.8/"
       fetched: "2026-07-10"
       notes: "Pinned to the v1.0.8 docs as the documented LTS."
-
 # -----------------------------------------------------------------------------
-# bitwarden-sm-operator — controller for BitwardenSecret CRs.
+# vaultwarden-kubernetes-secrets — VaultwardenK8sSync (VKS).
 #
-# Source: https://bitwarden.com/help/secrets-manager-kubernetes-operator/
+# Source: https://github.com/antoniolago/vaultwarden-kubernetes-secrets
+# Chart:   oci://ghcr.io/antoniolago/charts/vaultwarden-kubernetes-secrets
 # Fetched: 2026-07-13
 # -----------------------------------------------------------------------------
-bitwarden_sm_operator:
+vaultwarden_k8s_sync:
   chart:
-    "2.0.2":
-      chart_url: "bitwarden/sm-operator"
-      chart_repo: "https://charts.bitwarden.com/"
-      source: "https://bitwarden.com/help/secrets-manager-kubernetes-operator/"
+    "2.0.0":
+      chart_url: "oci://ghcr.io/antoniolago/charts/vaultwarden-kubernetes-secrets"
+      chart_repo: "https://github.com/antoniolago/vaultwarden-kubernetes-secrets"
+      source: "https://github.com/antoniolago/vaultwarden-kubernetes-secrets"
       fetched: "2026-07-13"
-      notes: "Latest stable on the bitwarden index as of 2026-07-13."
+      notes: "Pinned to chart 2.0.0 (matches Chart.yaml appVersion 2.0.0)."
   image:
-    "2.1.0":
-      source: "https://github.com/bitwarden/sm-operator"
+    "2.0.0":
+      source: "ghcr.io/antoniolago/vaultwarden-kubernetes-secrets"
       fetched: "2026-07-13"
-      notes: "Operator image tag matches the chart 2.0.2 appVersion."
+      notes: "Sync service image tag matches chart 2.0.0 appVersion."

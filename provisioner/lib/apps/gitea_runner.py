@@ -10,24 +10,26 @@ Sources:
   - https://gitea.com/gitea/act-runner
 
 Installation flow:
-  1. Pre-flight: assert the bitwarden-sm-operator app has
-     registered the `BitwardenSecret` CRD (otherwise we
-     can't fetch the registration token).
-  2. Apply the `BitwardenSecret` CR for the runner (it
-     syncs the Gitea runner registration token into a k8s
-     Secret named `gitea-runner-config`).
-  3. Wait for the BitwardenSecret's status to become
-     `Synced=True`.
-  4. helm install the runner chart; the chart mounts the
-     `gitea-runner-config` Secret into the runner pod.
-  5. Wait for the runner Deployment to be Available.
+  1. helm install the runner chart; the chart mounts a
+     `gitea-runner-config` Secret (key `registrationToken`)
+     into the runner pod.
+  2. Explicitly seed the Secret with an empty
+     registrationToken so the runner pod has a
+     deterministic starting state.
+  3. Wait for the runner Deployment to be Available
+     (the runner goes Ready as soon as the Secret has a
+     non-empty token — the post-apply next-step walks the
+     operator through this).
 
 Idempotency:
-  - BitwardenSecret CR apply is server-side; existing CR
-    is reconciled.
   - helm upgrade --install (default).
   - The runner is `ephemeral: true` so the registration
     is single-use; subsequent runs re-register.
+  - The registration Token is sourced from a static k8s
+    Secret, populated manually by the operator (or
+    programmatically by VaultwardenK8sSync once that app
+    is configured to sync a specific Vaultwarden item
+    into this Secret).
 """
 
 from __future__ import annotations
@@ -49,34 +51,6 @@ DEFAULT_VALUES_FILE = "values/gitea-runner.yaml"
 
 # The Secret name the chart creates / mounts.
 RUNNER_CONFIG_SECRET = "gitea-runner-config"
-# The BitwardenSecret CR name (must match what bitwarden_sm
-# and the operator agree on).
-BW_SECRET_CR = "gitea-runner-registration"
-BW_AUTH_SECRET = "bw-auth-token"
-
-# The BitwardenSecret CR body. We pin secretKeyName + map
-# so the operator knows which Bitwarden secret to sync into
-# which k8s secret key. Operators create the `bw-auth-token`
-# Secret themselves (see docs/runbooks/add-an-app.md).
-BW_SECRET_CR_MANIFEST = """\
----
-apiVersion: k8s.bitwarden.com/v1
-kind: BitwardenSecret
-metadata:
-  name: {cr_name}
-  namespace: {namespace}
-  labels:
-    app.kubernetes.io/name: gitea-runner
-spec:
-  organizationId: "{organization_id}"
-  secretName: {secret_name}
-  map:
-    - bwSecretId: "{bw_secret_id}"
-      secretKeyName: registrationToken
-  authToken:
-    secretName: {auth_secret_name}
-    secretKey: token
-"""
 
 
 @dataclass
@@ -98,21 +72,6 @@ class GiteaRunnerApp:
         """
         return "http://gitea-http.gitea.svc.cluster.local:3000"
 
-    def _bw_secret_id(self, catalog: dict[str, Any]) -> str:
-        """Operator-supplied Bitwarden Secrets Manager secret
-        UUID for the runner registration token. Lives in
-        catalog.bitwarden.runner_secret_id. Empty -> apply
-        proceeds but logs a warning.
-        """
-        bw = catalog.get("bitwarden", {})
-        v = bw.get("runner_secret_id", "")
-        return v if isinstance(v, str) else ""
-
-    def _organization_id(self, catalog: dict[str, Any]) -> str:
-        bw = catalog.get("bitwarden", {})
-        v = bw.get("organization_id", "")
-        return v if isinstance(v, str) else ""
-
     def plan(
         self, ctx: Container, catalog: dict[str, Any]
     ) -> AppPlanResult:
@@ -125,15 +84,17 @@ class GiteaRunnerApp:
             ],
             would_apply=[
                 f"kubectl apply --server-side -n {NAMESPACE} "
-                f"(BitwardenSecret={BW_SECRET_CR})",
+                f"(Secret={RUNNER_CONFIG_SECRET}, key=registrationToken)",
             ],
             notes=[
                 f"image: gitea/runner:{APP_VERSION}",
                 "ephemeral: true (single-use registration)",
                 "persistence: proxmox-lvm-thin PVC (cache + data)",
                 (
-                    "registration token source: Bitwarden "
-                    f"({BW_SECRET_CR} -> {RUNNER_CONFIG_SECRET})"
+                    "registration token source: static k8s Secret "
+                    f"({RUNNER_CONFIG_SECRET}). Operator pastes "
+                    "the Gitea UI's runner-registration token "
+                    "into the Secret after first-boot."
                 ),
             ],
         )
@@ -159,70 +120,20 @@ class GiteaRunnerApp:
 
         kubectl = self._kubectl(ctx)
 
-        # 1. Pre-flight: CRD present?
-        crd_check = kubectl.get(
-            "crd",
-            "bitwardensecrets.k8s.bitwarden.com",
-            jsonpath="{.metadata.name}",
-            timeout_s=10.0,
-        )
-        if crd_check.returncode != 0 or not crd_check.stdout.strip():
-            raise RuntimeError(
-                "bitwardensecrets.k8s.bitwarden.com CRD is not "
-                "installed. Apply the bitwarden-sm-operator "
-                "app first (`cicdctl apply cicd` with "
-                "bitwarden enabled)."
-            )
+        # 1. The registration token contract is codified by
+        #    the static Secret `gitea-runner-config` (key
+        #    `registrationToken`) in this namespace. The chart
+        #    renders the Secret shell with a placeholder. We
+        #    seed an empty token explicitly so the runner pod
+        #    has a deterministic starting state. The operator
+        #    (or the vaultwarden-k8s-sync app) is responsible
+        #    for populating this Secret with a real token.
 
-        # 2. Apply the BitwardenSecret CR if the operator
-        #    has credentials.
-        org_id = self._organization_id(catalog)
-        bw_sid = self._bw_secret_id(catalog)
-        if org_id and bw_sid:
-            cr_yaml = BW_SECRET_CR_MANIFEST.format(
-                cr_name=BW_SECRET_CR,
-                namespace=NAMESPACE,
-                organization_id=org_id,
-                secret_name=RUNNER_CONFIG_SECRET,
-                bw_secret_id=bw_sid,
-                auth_secret_name=BW_AUTH_SECRET,
-            )
-            cr_apply = kubectl.apply(
-                manifest=cr_yaml, namespace=NAMESPACE, server_side=True
-            )
-            if cr_apply.returncode != 0:
-                raise RuntimeError(
-                    f"kubectl apply BitwardenSecret={BW_SECRET_CR} "
-                    f"failed: rc={cr_apply.returncode} "
-                    f"stderr={cr_apply.stderr.strip()[:500]}"
-                )
-            ctx.logger.info(
-                "gitea_runner.bitwardensecret_applied",
-                cr=BW_SECRET_CR,
-                namespace=NAMESPACE,
-            )
-        else:
-            ctx.logger.warn(
-                "gitea_runner.bitwarden_skipped",
-                message=(
-                    "catalog.bitwarden.organization_id or "
-                    "runner_secret_id is empty; the runner's "
-                    "registration token will not be auto-synced "
-                    "from Bitwarden. Provision manually: "
-                    f"create secret {RUNNER_CONFIG_SECRET} "
-                    "in namespace gitea-runner with key "
-                    "'registrationToken'."
-                ),
-            )
-
-        # 3. helm install the local chart.
+        # 2. helm install the local chart.
         # Note: we pass --wait=false because the runner pod
         # doesn't go Ready until the gitea-runner-config
-        # Secret has a real registration token. When Bitwarden
-        # is wired up, the BitwardenSecret CR reconciles into
-        # that Secret asynchronously — well after this helm
-        # call returns. Forcing --wait here would fail the
-        # apply on a fresh install.
+        # Secret has a real registration token. Forcing
+        # --wait here would fail the apply on a fresh install.
         result = ctx.helm.install_or_upgrade(
             release=RELEASE,
             chart=str(chart_dir),
@@ -258,15 +169,12 @@ class GiteaRunnerApp:
             # We don't raise — the runner may take a while to
             # register on a fresh Gitea instance.
 
-        # 5. Codify the registration-token contract. Whether
-        #    Bitwarden is wired or not, we explicitly upsert
-        #    the gitea-runner-config Secret so the runner pod
-        #    has a deterministic starting state. When
-        #    Bitwarden is disabled, the token is empty and
-        #    the runner loops until the operator supplies one
-        #    (documented in the post-apply next-step). When
-        #    Bitwarden is enabled, the BitwardenSecret CR
-        #    reconciles into this same Secret asynchronously.
+        # 5. Codify the registration-token contract. We
+        #    explicitly upsert the gitea-runner-config Secret
+        #    so the runner pod has a deterministic starting
+        #    state. The token is empty by default and the
+        #    operator (or the vaultwarden-k8s-sync app) is
+        #    responsible for populating it.
         secret_yaml = (
             "apiVersion: v1\n"
             "kind: Secret\n"
@@ -292,43 +200,28 @@ class GiteaRunnerApp:
             "gitea_runner.config_secret_seeded",
             secret=RUNNER_CONFIG_SECRET,
             namespace=NAMESPACE,
-            token_source=("bitwarden" if org_id and bw_sid else "operator_manual"),
+            token_source="operator_manual",
         )
 
-        # 6. Post-apply next step. Always surfaced so the
-        #    operator knows what to do once the install
-        #    finishes. When Bitwarden is wired, this is
-        #    automatic; otherwise the operator must fetch a
-        #    token from Gitea and update the Secret.
-        if org_id and bw_sid:
-            ctx.logger.info(
-                "gitea_runner.ready_for_registration",
-                bitwarden_organization_id=org_id,
-                bitwarden_secret_id=bw_sid,
-                next_step=(
-                    "BitwardenSecret CR applied; the sm-operator "
-                    "will reconcile a real registration token into "
-                    f"secret {RUNNER_CONFIG_SECRET} in the next "
-                    "sync cycle (typically < 60s)."
-                ),
-            )
-        else:
-            ctx.logger.info(
-                "gitea_runner.waiting_for_token",
-                next_step=(
-                    "open https://gitea.<base_domain> in a browser "
-                    "and finish first-boot (set admin password), "
-                    "then Site Administration -> Actions -> Runners "
-                    "-> Create new runner. Copy the registration "
-                    "token and update the Secret: "
-                    f"`kubectl -n {NAMESPACE} create secret "
-                    f"generic {RUNNER_CONFIG_SECRET} "
-                    "--from-literal=registrationToken=<TOKEN> "
-                    "--dry-run=client -o yaml | kubectl apply -f -`. "
-                    "The runner pod will pick up the new token "
-                    "within ~30s."
-                ),
-            )
+        # 6. Post-apply next step. The operator must fetch a
+        #    registration token from Gitea and populate the
+        #    Secret.
+        ctx.logger.info(
+            "gitea_runner.waiting_for_token",
+            next_step=(
+                "open https://gitea.<base_domain> in a browser "
+                "and finish first-boot (set admin password), "
+                "then Site Administration -> Actions -> Runners "
+                "-> Create new runner. Copy the registration "
+                "token and update the Secret: "
+                f"`kubectl -n {NAMESPACE} create secret "
+                f"generic {RUNNER_CONFIG_SECRET} "
+                "--from-literal=registrationToken=<TOKEN> "
+                "--dry-run=client -o yaml | kubectl apply -f -`. "
+                "The runner pod will pick up the new token "
+                "within ~30s."
+            ),
+        )
 
         return AppApplyResult(
             app_name=self.name,
@@ -405,6 +298,5 @@ __all__ = [
     "CHART_VERSION",
     "APP_VERSION",
     "NAMESPACE",
-    "BW_SECRET_CR",
     "RUNNER_CONFIG_SECRET",
 ]

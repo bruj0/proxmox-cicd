@@ -101,7 +101,9 @@ def main() -> int:
     # version ship with").
     from .lib.apps import gitea as _gitea  # noqa: F401
     from .lib.apps import gitea_runner as _gitea_runner  # noqa: F401
-    from .lib.apps import bitwarden_sm as _bitwarden_sm  # noqa: F401
+    from .lib.apps import (
+        vaultwarden_k8s_sync as _vaultwarden_k8s_sync,  # noqa: F401
+    )
 
     container = Container.production(
         proxmox_k3s_repo=args.proxmox_k3s_repo,

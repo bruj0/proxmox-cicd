@@ -9,10 +9,10 @@ import pytest
 
 from provisioner.lib.apps.gitea_runner import (
     APP_VERSION,
-    BW_SECRET_CR,
     CHART_VERSION,
     GiteaRunnerApp,
     NAMESPACE,
+    RUNNER_CONFIG_SECRET,
 )
 from provisioner.lib.apps import app_by_name, reset_registry
 from provisioner.lib.container import Container
@@ -49,12 +49,12 @@ def test_gitea_runner_app_is_registered_on_import() -> None:
     assert app_by_name("gitea-runner") is gr_mod.GiteaRunnerApp
 
 
-def test_gitea_runner_plan_mentions_local_chart_and_bw(tmp_path: Path) -> None:
+def test_gitea_runner_plan_mentions_local_chart_and_secret(tmp_path: Path) -> None:
     ctx = _make_ctx(tmp_path)
     plan = GiteaRunnerApp().plan(ctx, {})
     assert plan.app_name == "gitea-runner"
     assert any("helm upgrade --install gitea-runner" in s for s in plan.would_install)
-    assert any("BitwardenSecret" in s for s in plan.would_apply)
+    assert any(RUNNER_CONFIG_SECRET in s for s in plan.would_apply)
     assert any("ephemeral: true" in n for n in plan.notes)
 
 
@@ -75,12 +75,6 @@ def test_gitea_runner_apply_uses_local_chart_path(tmp_path: Path) -> None:
     fake_run = MagicMock(
         return_value=MagicMock(returncode=0, stdout="", stderr="")
     )
-    # The CRD check needs a non-empty stdout to pass.
-    crd_present = MagicMock(
-        return_value=MagicMock(
-            returncode=0, stdout="bitwardensecrets.k8s.bitwarden.com", stderr=""
-        )
-    )
 
     def fake_apply(*args: object, **kwargs: object) -> MagicMock:
         return MagicMock(returncode=0, stdout="", stderr="")
@@ -91,24 +85,13 @@ def test_gitea_runner_apply_uses_local_chart_path(tmp_path: Path) -> None:
     ctx.helm = helm_mock
     kubectl_mock = MagicMock()
     kubectl_mock.apply = MagicMock(side_effect=fake_apply)
-    kubectl_mock.get = crd_present
     kubectl_mock.wait_deployments_available = fake_run
     kubectl_mock.delete_namespace = fake_run
     ctx.kubectl = kubectl_mock
 
-    result = GiteaRunnerApp().apply(
-        ctx,
-        {
-            "bitwarden": {
-                "organization_id": "00000000-0000-0000-0000-000000000001",
-                "runner_secret_id": "00000000-0000-0000-0000-000000000002",
-            }
-        },
-    )
+    result = GiteaRunnerApp().apply(ctx, {})
 
     # helm was called with the local chart path, not an OCI URL.
-    # fake_run serves both helm.install_or_upgrade and the wait/delete
-    # kubectl paths; the helm call has `chart=` kwarg.
     helm_calls = [
         c for c in fake_run.call_args_list if "chart" in c.kwargs
     ]
@@ -118,55 +101,17 @@ def test_gitea_runner_apply_uses_local_chart_path(tmp_path: Path) -> None:
     assert kwargs["namespace"] == NAMESPACE
     assert kwargs["release"] == "gitea-runner"
 
-    # BitwardenSecret CR was applied.
-    cr_call = kubectl_mock.apply.call_args_list[0]
-    # The orchestrator calls `kubectl.apply(manifest=..., namespace=...)`
-    # so the manifest is in `kwargs['manifest']`, not `args[0]`.
-    cr_kwargs = cr_call.kwargs
-    if "manifest" in cr_kwargs:
-        cr_input = cr_kwargs["manifest"]
-    elif "input" in cr_kwargs:
-        cr_input = cr_kwargs["input"]
-    elif cr_call.args:
-        cr_input = cr_call.args[0]
-    else:
-        pytest.fail(f"no manifest kwarg in apply call: {cr_call!r}")
-    assert BW_SECRET_CR in cr_input
-    assert "bitwarden" in cr_input.lower()
-
+    # The runner-config Secret was seeded (empty registrationToken).
+    secret_apply_calls = [
+        c for c in kubectl_mock.apply.call_args_list
+        if RUNNER_CONFIG_SECRET in str(c)
+    ]
+    assert len(secret_apply_calls) >= 1, (
+        f"expected a kubectl apply for {RUNNER_CONFIG_SECRET}; "
+        f"got: {kubectl_mock.apply.call_args_list!r}"
+    )
     assert result.app_name == "gitea-runner"
     assert result.namespace == "gitea-runner"
-
-
-def test_gitea_runner_apply_fails_when_bitwarden_crd_missing(tmp_path: Path) -> None:
-    repo = tmp_path
-    chart_dir = repo / "infra" / "charts" / "gitea-runner"
-    chart_dir.mkdir(parents=True)
-    (chart_dir / "Chart.yaml").write_text(
-        "apiVersion: v2\nname: gitea-runner\nversion: 0.1.0\n"
-    )
-    k8s = repo / "infra" / "clusters" / "cicd"
-    k8s.mkdir(parents=True)
-    _write_kubeconfig(k8s / "kubeconfig.yaml")
-
-    ctx = _make_ctx(repo)
-    helm_mock = MagicMock()
-    helm_mock.install_or_upgrade = MagicMock()
-    helm_mock.uninstall = MagicMock()
-    ctx.helm = helm_mock
-    kubectl_mock = MagicMock()
-    # CRD check returns empty -> no CRD registered.
-    kubectl_mock.get = MagicMock(
-        return_value=MagicMock(returncode=0, stdout="", stderr="")
-    )
-    kubectl_mock.apply = MagicMock()
-    kubectl_mock.wait_deployments_available = MagicMock()
-    kubectl_mock.delete_namespace = MagicMock()
-    ctx.kubectl = kubectl_mock
-
-    with pytest.raises(RuntimeError) as ei:
-        GiteaRunnerApp().apply(ctx, {})
-    assert "CRD is not installed" in str(ei.value)
 
 
 def test_gitea_runner_status_when_release_present(tmp_path: Path) -> None:
