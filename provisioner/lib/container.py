@@ -57,11 +57,23 @@ class Container:
             / f"cicdctl_{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.audit.jsonl"
         )
         logger = StructuredLogger(audit_path=audit_log)
+        # Wire the logger into the helm runner so every helm
+        # subprocess call lands in the same audit log file as the
+        # orchestrator's high-level steps. Without this, the runner
+        # silently captured stdout/stderr into CompletedProcess
+        # fields that nothing read.
+        helm = HelmRunner(logger=logger)
         container = cls(
             repo_root=repo_root,
             proxmox_k3s_repo=proxmox_k3s_repo,
             logger=logger,
+            helm=helm,
         )
+        # KubectlRunner is constructed lazily per-app (apps own
+        # their own _kubectl() helper because they need the
+        # cluster's kubeconfig path). Each app's helper now
+        # passes logger=ctx.logger so kubectl calls land in the
+        # same audit log.
         from .orchestrator import Orchestrator
 
         container.orchestrator = Orchestrator(container)
@@ -84,10 +96,12 @@ class Container:
                 / f"test_{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.audit.jsonl"
             )
         logger = StructuredLogger(audit_path=audit_log)
+        helm = HelmRunner(logger=logger)
         container = cls(
             repo_root=repo_root,
             proxmox_k3s_repo=proxmox_k3s_repo,
             logger=logger,
+            helm=helm,
         )
         from .orchestrator import Orchestrator
 

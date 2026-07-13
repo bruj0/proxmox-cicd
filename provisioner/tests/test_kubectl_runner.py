@@ -226,3 +226,92 @@ def test_kubectl_apply_propagates_timeout(tmp_path: Path) -> None:
     runner.subprocess_runner = raise_timeout  # type: ignore[assignment]
     with pytest.raises(subprocess.TimeoutExpired):
         runner.apply("apiVersion: v1\nkind: Namespace\n", namespace="gitea")
+
+
+# ----------------------------------------------------------- audit logging
+
+
+def _make_logger(audit_path):
+    """Inline-import StructuredLogger so the test file stays
+    standalone if the existing tests above change their imports.
+    """
+    from provisioner.lib.log import StructuredLogger
+
+    return StructuredLogger(audit_path=audit_path)
+
+
+def _read_records(path):
+    import json
+
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+def test_helm_runner_emits_info_log_with_cmd_and_rc(tmp_path):
+    audit = tmp_path / "audit.jsonl"
+    logger = _make_logger(audit)
+    fake = MagicMock(
+        return_value=MagicMock(returncode=0, stdout="deployed\n", stderr="")
+    )
+    runner = HelmRunner(subprocess_runner=fake, logger=logger)
+
+    result = runner.install_or_upgrade(
+        release="sm-operator",
+        chart="bitwarden/sm-operator",
+        namespace="sm-operator-system",
+        version="2.0.2",
+    )
+
+    assert result.returncode == 0
+    records = _read_records(audit)
+    assert len(records) == 1
+    rec = records[0]
+    assert rec["level"] == "info"
+    assert rec["step"] == "helm.upgrade_install.sm-operator"
+    assert "helm upgrade --install sm-operator bitwarden/sm-operator" in rec["data"]["cmd"]
+    assert rec["data"]["rc"] == 0
+    assert rec["data"]["stdout_tail"] == "deployed\n"
+    assert rec["data"]["stderr_tail"] == ""
+    assert rec["data"]["duration_s"] >= 0
+
+
+def test_helm_runner_emits_warn_log_on_nonzero_rc(tmp_path):
+    audit = tmp_path / "audit.jsonl"
+    logger = _make_logger(audit)
+    fake = MagicMock(
+        return_value=MagicMock(
+            returncode=1, stdout="", stderr="Error: chart not found\n"
+        )
+    )
+    runner = HelmRunner(subprocess_runner=fake, logger=logger)
+
+    result = runner.install_or_upgrade(
+        release="bad",
+        chart="bitwarden/sm-operator",
+        namespace="sm-operator-system",
+        version="0.0.0",
+    )
+
+    assert result.returncode == 1
+    records = _read_records(audit)
+    # 1 info + 1 warn
+    assert len(records) == 2
+    assert records[0]["level"] == "info"
+    assert records[0]["step"] == "helm.upgrade_install.bad"
+    assert records[1]["level"] == "warn"
+    assert records[1]["step"] == "helm.upgrade_install.bad_failed"
+    assert records[1]["data"]["rc"] == 1
+    assert "chart not found" in records[1]["data"]["stderr_tail"]
+
+
+def test_helm_runner_silent_when_logger_is_none():
+    """Backward-compat: HelmRunner() with no logger should not
+    blow up. (Tests in this suite do exactly that.)"""
+    fake = MagicMock(
+        return_value=MagicMock(returncode=0, stdout="", stderr="")
+    )
+    runner = HelmRunner(subprocess_runner=fake)
+    # No audit_path; no logger; must still return CompletedProcess.
+    result = runner.install_or_upgrade(
+        release="x", chart="y/z", namespace="ns",
+    )
+    assert result.returncode == 0

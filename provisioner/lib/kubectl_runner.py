@@ -23,10 +23,11 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .kubeconfig_loader import Kubeconfig
 
@@ -36,7 +37,19 @@ from .kubeconfig_loader import Kubeconfig
 _DEFAULT_TIMEOUT_S = 60.0
 _LONG_TIMEOUT_S = 300.0
 
+# Cap on captured stdout/stderr that we write to the audit log.
+_LOG_TAIL_CHARS = 500
+
 SubprocessRunner = Callable[..., subprocess.CompletedProcess[str]]
+
+if TYPE_CHECKING:
+    from .log import StructuredLogger
+
+
+def _tail(text: str, limit: int = _LOG_TAIL_CHARS) -> str:
+    if len(text) <= limit:
+        return text
+    return "...[truncated]..." + text[-limit:]
 
 
 @dataclass
@@ -46,6 +59,7 @@ class KubectlRunner:
     kubeconfig: Kubeconfig
     subprocess_runner: SubprocessRunner = subprocess.run
     env_base: dict[str, str] | None = None
+    logger: "StructuredLogger | None" = None
 
     def _base_cmd(self, *args: str) -> list[str]:
         return [
@@ -59,6 +73,47 @@ class KubectlRunner:
         env = dict(self.env_base) if self.env_base else dict(os.environ)
         env["KUBECONFIG"] = str(self.kubeconfig.path)
         return env
+
+    def _run(
+        self,
+        cmd: list[str],
+        *,
+        timeout_s: float,
+        step: str,
+    ) -> subprocess.CompletedProcess[str]:
+        """Wrap subprocess.run with audit logging (mirrors HelmRunner._run).
+
+        Every kubectl call emits one `info` line per invocation
+        with cmd, rc, duration_s, stdout_tail, stderr_tail; a
+        non-zero rc also emits a `warn` line.
+        """
+        started = time.monotonic()
+        result = self.subprocess_runner(  # noqa: S603
+            cmd,
+            check=False,
+            text=True,
+            timeout=timeout_s,
+            capture_output=True,
+            env=self._env(),
+        )
+        duration_s = round(time.monotonic() - started, 3)
+        if self.logger is not None:
+            self.logger.info(
+                step=step,
+                cmd=" ".join(cmd),
+                rc=result.returncode,
+                duration_s=duration_s,
+                stdout_tail=_tail(result.stdout),
+                stderr_tail=_tail(result.stderr),
+            )
+            if result.returncode != 0:
+                self.logger.warn(
+                    step=f"{step}_failed",
+                    cmd=" ".join(cmd),
+                    rc=result.returncode,
+                    stderr_tail=_tail(result.stderr),
+                )
+        return result
 
     # ------------------------------------------------------ writes
 
@@ -83,7 +138,11 @@ class KubectlRunner:
             cmd.extend(["-n", namespace])
         if server_side:
             cmd.append("--server-side")
-        return self.subprocess_runner(  # noqa: S603
+        # Apply takes manifest on stdin, so use subprocess_runner
+        # directly with the input kwarg (the _run helper would
+        # discard the `input` arg).
+        started = time.monotonic()
+        result = self.subprocess_runner(  # noqa: S603
             cmd,
             input=manifest,
             text=True,
@@ -92,6 +151,24 @@ class KubectlRunner:
             capture_output=True,
             env=self._env(),
         )
+        duration_s = round(time.monotonic() - started, 3)
+        if self.logger is not None:
+            self.logger.info(
+                step=f"kubectl.apply.{namespace or 'default'}",
+                cmd=" ".join(cmd),
+                rc=result.returncode,
+                duration_s=duration_s,
+                manifest_bytes=len(manifest),
+                stderr_tail=_tail(result.stderr),
+            )
+            if result.returncode != 0:
+                self.logger.warn(
+                    step="kubectl.apply_failed",
+                    cmd=" ".join(cmd),
+                    rc=result.returncode,
+                    stderr_tail=_tail(result.stderr),
+                )
+        return result
 
     def delete(
         self,
@@ -108,13 +185,10 @@ class KubectlRunner:
         if ignore_not_found:
             cmd.append("--ignore-not-found")
         cmd.append(f"--wait={'true' if wait else 'false'}")
-        return self.subprocess_runner(  # noqa: S603
+        return self._run(
             cmd,
-            check=False,
-            text=True,
-            timeout=timeout_s,
-            capture_output=True,
-            env=self._env(),
+            timeout_s=timeout_s,
+            step=f"kubectl.delete.{resource}.{name}",
         )
 
     def delete_namespace(
@@ -125,13 +199,10 @@ class KubectlRunner:
     ) -> subprocess.CompletedProcess[str]:
         """`kubectl delete ns <ns> --wait=true`."""
         cmd = self._base_cmd("delete", "ns", namespace, "--wait=true")
-        return self.subprocess_runner(  # noqa: S603
+        return self._run(
             cmd,
-            check=False,
-            text=True,
-            timeout=timeout_s,
-            capture_output=True,
-            env=self._env(),
+            timeout_s=timeout_s,
+            step=f"kubectl.delete_ns.{namespace}",
         )
 
     # ------------------------------------------------------ reads
@@ -156,13 +227,10 @@ class KubectlRunner:
             cmd.extend(["-l", label_selector])
         if jsonpath:
             cmd.extend(["-o", f"jsonpath={jsonpath}"])
-        return self.subprocess_runner(  # noqa: S603
+        return self._run(
             cmd,
-            check=False,
-            text=True,
-            timeout=timeout_s,
-            capture_output=True,
-            env=self._env(),
+            timeout_s=timeout_s,
+            step=f"kubectl.get.{resource}",
         )
 
     def wait(
@@ -183,13 +251,10 @@ class KubectlRunner:
             "-n",
             namespace,
         )
-        return self.subprocess_runner(  # noqa: S603
+        return self._run(
             cmd,
-            check=False,
-            text=True,
-            timeout=timeout_s + 30.0,
-            capture_output=True,
-            env=self._env(),
+            timeout_s=timeout_s + 30.0,
+            step=f"kubectl.wait.{resource}.{name}",
         )
 
     def wait_deployments_available(
@@ -211,13 +276,10 @@ class KubectlRunner:
             "--for=condition=Available=true",
             f"--timeout={int(timeout_s)}s",
         )
-        return self.subprocess_runner(  # noqa: S603
+        return self._run(
             cmd,
-            check=False,
-            text=True,
-            timeout=timeout_s + 30.0,
-            capture_output=True,
-            env=self._env(),
+            timeout_s=timeout_s + 30.0,
+            step=f"kubectl.wait_deploys.{namespace}",
         )
 
     def version(self, timeout_s: float = 10.0) -> subprocess.CompletedProcess[str]:
@@ -228,13 +290,42 @@ class KubectlRunner:
         anything else.
         """
         cmd = self._base_cmd("version", "--client=true", "--output=yaml")
-        return self.subprocess_runner(  # noqa: S603
+        return self._run(
             cmd,
-            check=False,
-            text=True,
-            timeout=timeout_s,
-            capture_output=True,
-            env=self._env(),
+            timeout_s=timeout_s,
+            step="kubectl.version",
+        )
+
+    def run_oneshot(
+        self,
+        *,
+        image: str,
+        namespace: str,
+        command: list[str],
+        timeout_s: float = 30.0,
+    ) -> subprocess.CompletedProcess[str]:
+        """`kubectl run --rm -i --restart=Never --image=<image> -n <ns> -- <cmd>`.
+
+        Spawns a one-shot pod, runs the command, captures the
+        output, and the pod auto-deletes (`--rm`). Used by the
+        status smoke tests to probe in-cluster Service URLs
+        without needing a port-forward.
+        """
+        cmd = self._base_cmd(
+            "run",
+            "--rm",
+            "-i",
+            "--quiet=true",
+            "--restart=Never",
+            f"--image={image}",
+            f"--namespace={namespace}",
+            "--",
+            *command,
+        )
+        return self._run(
+            cmd,
+            timeout_s=timeout_s,
+            step=f"kubectl.run_oneshot.{namespace}",
         )
 
 
