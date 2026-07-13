@@ -16,10 +16,10 @@ gitea_runner_chart_path: "infra/charts/gitea-runner"
 gitea_runner_image: "1.0.8"
 gitea_runner_values_file: "values/gitea-runner.yaml"
 
-bitwarden_sm_operator_chart: "0.4.0"
+bitwarden_sm_operator_chart: "2.0.2"
 bitwarden_sm_operator_chart_url: "bitwarden/sm-operator"
 bitwarden_sm_operator_chart_repo: "https://charts.bitwarden.com/"
-bitwarden_sm_operator_image: "0.4.0"
+bitwarden_sm_operator_image: "2.1.0"
 bitwarden_sm_operator_values_file: "values/bitwarden-sm-operator.yaml"
 
 rationale:
@@ -27,8 +27,8 @@ rationale:
   gitea_image: "1.26.x rolling major.minor; safe across patches."
   gitea_runner_chart: "First version of the in-repo chart; wraps gitea/runner:1.0.8."
   gitea_runner_image: "1.0.8 is the documented LTS per https://docs.gitea.com/runner/1.0.8/."
-  bitwarden_sm_operator_chart: "0.4.0 is the latest pre-release on the bitwarden/charts repo."
-  bitwarden_sm_operator_image: "0.4.0 matches the chart's appVersion."
+  bitwarden_sm_operator_chart: "2.0.2 is the latest stable on the bitwarden/charts repo as of 2026-07-13."
+  bitwarden_sm_operator_image: "2.1.0 matches the chart 2.0.2 appVersion."
 
 sources:
   gitea: "https://gitea.com/gitea/helm-chart/releases/tag/v12.0.0"

@@ -18,14 +18,11 @@ Install command (verbatim from the Bitwarden docs):
   helm repo update
   helm upgrade sm-operator bitwarden/sm-operator -i \
     --debug -n sm-operator-system --create-namespace \
-    --values my-values.yaml --devel
-
-The `--devel` flag is required because the operator chart
-lives on a pre-release channel.
+    --values my-values.yaml
 
 Pins:
-  - chart: oci://registry-1.docker.io/bitwarden/sm-operator:0.4.0
-  - operator image: bitwarden/sm-operator:0.4.0 (from chart)
+  - chart: bitwarden/sm-operator:2.0.2
+  - operator image: bitwarden/sm-operator:2.1.0 (from chart appVersion)
 
 Idempotency: helm upgrade --install + kubectl wait.
 """
@@ -45,8 +42,8 @@ from . import AppApplyResult, AppPlanResult, AppStatus, register
 REPO_NAME = "bitwarden"
 REPO_URL = "https://charts.bitwarden.com/"
 CHART = "bitwarden/sm-operator"
-CHART_VERSION = "0.4.0"  # pinned in versions.yaml
-OPERATOR_IMAGE_VERSION = "0.4.0"
+CHART_VERSION = "2.0.2"  # pinned in versions.yaml
+OPERATOR_IMAGE_VERSION = "2.1.0"
 NAMESPACE = "sm-operator-system"
 RELEASE = "sm-operator"
 DEFAULT_VALUES_FILE = "values/bitwarden-sm-operator.yaml"
@@ -70,7 +67,7 @@ class BitwardenSmApp:
                 f"helm repo add {REPO_NAME} {REPO_URL}",
                 f"helm upgrade --install {RELEASE} {CHART} "
                 f"--version {CHART_VERSION} -n {NAMESPACE} "
-                f"--create-namespace --devel -f "
+                f"--create-namespace -f "
                 f"{self._values_file(ctx)}",
             ],
             would_apply=[],
@@ -113,7 +110,7 @@ class BitwardenSmApp:
                 stderr=repo_update.stderr.strip()[:500],
             )
 
-        # 2. helm upgrade --install with --devel.
+        # 2. helm upgrade --install (stable channel; no --devel).
         result = ctx.helm.install_or_upgrade(
             release=RELEASE,
             chart=CHART,
@@ -121,7 +118,6 @@ class BitwardenSmApp:
             version=CHART_VERSION,
             values_files=(values,),
             timeout_s=300.0,
-            extra_args=("--devel",),
         )
         if result.returncode != 0:
             raise RuntimeError(
@@ -253,7 +249,9 @@ class BitwardenSmApp:
         cluster = os.environ.get("PROXMOX_CICD_CLUSTER", "cicd")
         path = ctx.proxmox_k3s_repo / "infra" / "clusters" / cluster / "kubeconfig.yaml"
         kubeconfig: Kubeconfig = load(path)
-        return KubectlRunner(kubeconfig=kubeconfig)
+        kubectl = KubectlRunner(kubeconfig=kubeconfig, logger=ctx.logger)
+        ctx.kubectl = kubectl
+        return kubectl
 
 
 # Side-effect import: register on import.

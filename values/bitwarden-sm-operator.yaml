@@ -3,19 +3,22 @@
 #
 # Rendered via:
 #   helm upgrade --install sm-operator bitwarden/sm-operator \
-#     --version 0.4.0 -n sm-operator-system --create-namespace \
-#     --values values/bitwarden-sm-operator.yaml --devel
+#     --version 2.0.2 -n sm-operator-system --create-namespace \
+#     --values values/bitwarden-sm-operator.yaml
 #
 # Source: https://bitwarden.com/help/secrets-manager-kubernetes-operator/
 
 # 1. Operator image pin. The chart's default is fine; we pin
 #    it explicitly so a chart bump can't silently upgrade the
-#    controller.
+#    controller. Note: the chart's *default* repository is
+#    `ghcr.io/bitwarden/sm-operator` (Bitwarden publishes to
+#    GHCR, not Docker Hub). Pinning it explicitly here means
+#    a chart bump can't silently move us off GHCR either.
 containers:
   manager:
     image:
-      repository: bitwarden/sm-operator
-      tag: "0.4.0"
+      repository: ghcr.io/bitwarden/sm-operator
+      tag: "2.1.0"
       pullPolicy: IfNotPresent
   enableSeccompProfileRuntimeDefault: true
 
@@ -32,9 +35,12 @@ resources:
 #    every N seconds. Minimum is 180 (per the Bitwarden docs).
 # 4. Cloud region. Operators outside the US/EU clouds set
 #    this explicitly. Self-hosted Bitwarden also needs
-#    bwApiUrlOverride + bwIdentityUrlOverride — we don't
-#    pin those here because every cluster has its own
-#    Bitwarden tenant.
+#    bwApiUrlOverride + bwIdentityUrlOverride (per the
+#    Bitwarden docs). For this cluster we point at
+#    bitwarden.bruj0.net — change if you re-target a
+#    different tenant. See https://bitwarden.com/help/secrets-manager-kubernetes-operator/.
 settings:
   bwSecretsManagerRefreshInterval: 300
   cloudRegion: US
+  bwApiUrlOverride: "https://bitwarden.bruj0.net/api"
+  bwIdentityUrlOverride: "https://bitwarden.bruj0.net/identity"

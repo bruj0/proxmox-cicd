@@ -58,21 +58,19 @@ gitea_runner:
 # -----------------------------------------------------------------------------
 # bitwarden-sm-operator — controller for BitwardenSecret CRs.
 #
-# The chart lives on a pre-release channel, hence the
-# `--devel` flag in apps/bitwarden_sm.py.
 # Source: https://bitwarden.com/help/secrets-manager-kubernetes-operator/
-# Fetched: 2026-07-10
+# Fetched: 2026-07-13
 # -----------------------------------------------------------------------------
 bitwarden_sm_operator:
   chart:
-    "0.4.0":
+    "2.0.2":
       chart_url: "bitwarden/sm-operator"
       chart_repo: "https://charts.bitwarden.com/"
       source: "https://bitwarden.com/help/secrets-manager-kubernetes-operator/"
-      fetched: "2026-07-10"
-      notes: "Pinned to chart 0.4.0; --devel required."
+      fetched: "2026-07-13"
+      notes: "Latest stable on the bitwarden index as of 2026-07-13."
   image:
-    "0.4.0":
+    "2.1.0":
       source: "https://github.com/bitwarden/sm-operator"
-      fetched: "2026-07-10"
-      notes: "Operator image tag matches the chart's appVersion."
+      fetched: "2026-07-13"
+      notes: "Operator image tag matches the chart 2.0.2 appVersion."

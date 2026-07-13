@@ -11,6 +11,7 @@ from provisioner.lib.apps.bitwarden_sm import (
     CHART,
     CHART_VERSION,
     NAMESPACE,
+    OPERATOR_IMAGE_VERSION,
     BitwardenSmApp,
 )
 from provisioner.lib.apps import app_by_name, reset_registry
@@ -48,15 +49,18 @@ def test_bitwarden_sm_is_registered_on_import() -> None:
     assert app_by_name("bitwarden-sm-operator") is bw_mod.BitwardenSmApp
 
 
-def test_bitwarden_sm_plan_mentions_devel_flag() -> None:
+def test_bitwarden_sm_plan_pins_stable_chart_version() -> None:
     ctx = _make_ctx(Path("/tmp"))
     plan = BitwardenSmApp().plan(ctx, {})
     assert plan.app_name == "bitwarden-sm-operator"
-    assert any("--devel" in s for s in plan.would_install)
+    # Stable channel — no --devel flag in the rendered install.
+    assert not any("--devel" in s for s in plan.would_install)
+    # The pinned chart version surfaces in the install command.
+    assert any(CHART_VERSION in s for s in plan.would_install)
     assert any("bitwardensecrets.k8s.bitwarden.com" in n for n in plan.notes)
 
 
-def test_bitwarden_sm_apply_runs_helm_with_devel(tmp_path: Path) -> None:
+def test_bitwarden_sm_apply_runs_helm_stable(tmp_path: Path) -> None:
     repo = tmp_path
     (repo / "values").mkdir(parents=True)
     (repo / "values" / "bitwarden-sm-operator.yaml").write_text("# ok\n")
@@ -89,21 +93,20 @@ def test_bitwarden_sm_apply_runs_helm_with_devel(tmp_path: Path) -> None:
 
     result = BitwardenSmApp().apply(ctx, {})
 
-    # helm install_or_upgrade had --devel as an extra_arg.
+    # helm install_or_upgrade has NO --devel extra_arg (stable channel).
     helm_calls = [
         c for c in fake_run.call_args_list if "chart" in c.kwargs
     ]
     assert len(helm_calls) == 1
-    extra_args = helm_calls[0].kwargs.get("extra_args")
-    assert extra_args is not None
-    assert "--devel" in extra_args
+    extra_args = helm_calls[0].kwargs.get("extra_args") or ()
+    assert "--devel" not in extra_args
     assert helm_calls[0].kwargs["namespace"] == NAMESPACE
     assert helm_calls[0].kwargs["chart"] == CHART
     assert helm_calls[0].kwargs["version"] == CHART_VERSION
 
     assert result.app_name == "bitwarden-sm-operator"
     assert result.namespace == "sm-operator-system"
-    assert result.image_version == "0.4.0"
+    assert result.image_version == OPERATOR_IMAGE_VERSION
 
 
 def test_bitwarden_sm_apply_fails_when_values_missing(tmp_path: Path) -> None:
