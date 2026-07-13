@@ -85,6 +85,9 @@ def test_gitea_runner_apply_uses_local_chart_path(tmp_path: Path) -> None:
     ctx.helm = helm_mock
     kubectl_mock = MagicMock()
     kubectl_mock.apply = MagicMock(side_effect=fake_apply)
+    kubectl_mock.get = MagicMock(
+        return_value=MagicMock(returncode=0, stdout="gitea-runner-config", stderr="")
+    )
     kubectl_mock.wait_deployments_available = fake_run
     kubectl_mock.delete_namespace = fake_run
     ctx.kubectl = kubectl_mock
@@ -101,17 +104,96 @@ def test_gitea_runner_apply_uses_local_chart_path(tmp_path: Path) -> None:
     assert kwargs["namespace"] == NAMESPACE
     assert kwargs["release"] == "gitea-runner"
 
-    # The runner-config Secret was seeded (empty registrationToken).
+    # The runner-config Secret is owned by VaultwardenK8sSync.
+    # The apply uses a regression guard: it inspects the
+    # existing value via kubectl get and only re-seeds a
+    # placeholder when the Secret is missing OR still carries
+    # the chart's placeholder. A VKS-populated value is
+    # left alone (the apply path that takes that branch
+    # never calls kubectl.apply).
+    secret_get_calls = [
+        c for c in kubectl_mock.get.call_args_list
+        if c.kwargs.get("name") == RUNNER_CONFIG_SECRET
+    ]
+    assert len(secret_get_calls) >= 1, (
+        f"expected a kubectl get for {RUNNER_CONFIG_SECRET}; "
+        f"got: {kubectl_mock.get.call_args_list!r}"
+    )
+    # The mocked kubectl.get returns an empty string for
+    # the registrationToken field, which decodes to "",
+    # which is NOT the placeholder string — so the apply
+    # branch seeds the placeholder. That's the expected
+    # first-install behavior.
     secret_apply_calls = [
         c for c in kubectl_mock.apply.call_args_list
         if RUNNER_CONFIG_SECRET in str(c)
     ]
     assert len(secret_apply_calls) >= 1, (
-        f"expected a kubectl apply for {RUNNER_CONFIG_SECRET}; "
+        f"expected a kubectl apply to seed the placeholder; "
         f"got: {kubectl_mock.apply.call_args_list!r}"
     )
     assert result.app_name == "gitea-runner"
     assert result.namespace == "gitea-runner"
+
+
+def test_gitea_runner_apply_does_not_overwrite_vks_populated_token(
+    tmp_path: Path,
+) -> None:
+    """Regression guard: when VaultwardenK8sSync has already
+    written a real registrationToken to the Secret, the apply
+    must NOT clobber it with a placeholder.
+    """
+    import base64
+
+    repo = tmp_path
+    chart_dir = repo / "infra" / "charts" / "gitea-runner"
+    chart_dir.mkdir(parents=True)
+    (chart_dir / "Chart.yaml").write_text(
+        "apiVersion: v2\nname: gitea-runner\nversion: 0.1.0\n"
+    )
+    k8s = repo / "infra" / "clusters" / "cicd"
+    k8s.mkdir(parents=True)
+    _write_kubeconfig(k8s / "kubeconfig.yaml")
+
+    ctx = _make_ctx(repo)
+
+    fake_run = MagicMock(
+        return_value=MagicMock(returncode=0, stdout="", stderr="")
+    )
+
+    helm_mock = MagicMock()
+    helm_mock.install_or_upgrade = fake_run
+    helm_mock.uninstall = fake_run
+    ctx.helm = helm_mock
+
+    # VKS has populated the Secret with a real token.
+    real_token = "real-gitea-runner-registration-token-from-vaultwarden"
+    populated = base64.b64encode(real_token.encode()).decode()
+    kubectl_mock = MagicMock()
+    kubectl_mock.apply = MagicMock(
+        return_value=MagicMock(returncode=0, stdout="", stderr="")
+    )
+    kubectl_mock.get = MagicMock(
+        return_value=MagicMock(
+            returncode=0, stdout=populated, stderr=""
+        )
+    )
+    kubectl_mock.wait_deployments_available = fake_run
+    kubectl_mock.delete_namespace = fake_run
+    ctx.kubectl = kubectl_mock
+
+    GiteaRunnerApp().apply(ctx, {})
+
+    # The apply must NOT have called kubectl apply for the
+    # Secret — VKS is the single writer.
+    secret_apply_calls = [
+        c for c in kubectl_mock.apply.call_args_list
+        if RUNNER_CONFIG_SECRET in str(c)
+    ]
+    assert secret_apply_calls == [], (
+        f"apply must not overwrite a VKS-populated token; "
+        f"got: {secret_apply_calls!r}"
+    )
 
 
 def test_gitea_runner_status_when_release_present(tmp_path: Path) -> None:

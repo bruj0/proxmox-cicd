@@ -10,26 +10,41 @@ Sources:
   - https://gitea.com/gitea/act-runner
 
 Installation flow:
-  1. helm install the runner chart; the chart mounts a
-     `gitea-runner-config` Secret (key `registrationToken`)
-     into the runner pod.
-  2. Explicitly seed the Secret with an empty
-     registrationToken so the runner pod has a
-     deterministic starting state.
-  3. Wait for the runner Deployment to be Available
-     (the runner goes Ready as soon as the Secret has a
-     non-empty token — the post-apply next-step walks the
-     operator through this).
+  1. helm install the runner chart. The chart's
+     `secret.yaml` template creates the
+     `gitea-runner-config` Secret shell with a
+     placeholder `registrationToken` value on first
+     install. The chart's deployment.yaml mounts the
+     Secret as a volume at `/etc/runner/token` — the
+     `registrationToken` key becomes the file content.
+  2. Wait for the runner Deployment to be Available.
+     The runner pod goes into CrashLoopBackOff until
+     the Secret has a non-empty registrationToken;
+     this is expected and the post-apply next-step
+     walks the operator through the population path.
+  3. The apply does NOT seed the Secret with a
+     placeholder. The `gitea-runner-config` Secret is
+     owned by VaultwardenK8sSync (see the
+     vaultwarden-k8s-sync app) — VKS polls a
+     Vaultwarden (or Bitwarden-compatible) server for
+     a Secure Note tagged with
+     `namespaces=gitea-runner`,
+     `secret-name=gitea-runner-config`, and
+     `secret-key=registrationToken`, and writes the
+     note's body into the Secret's `registrationToken`
+     key. The apply step + the VKS sync step
+     converge on the same Secret; the apply never
+     overwrites the VKS-owned data.
 
 Idempotency:
   - helm upgrade --install (default).
   - The runner is `ephemeral: true` so the registration
     is single-use; subsequent runs re-register.
-  - The registration Token is sourced from a static k8s
-    Secret, populated manually by the operator (or
-    programmatically by VaultwardenK8sSync once that app
-    is configured to sync a specific Vaultwarden item
-    into this Secret).
+  - The apply leaves the `gitea-runner-config` Secret
+    alone. The chart's `secret.yaml` template uses
+    `lookup` to skip creation if the Secret already
+    exists, so a re-apply on a cluster where VKS has
+    already populated the Secret doesn't clobber it.
 """
 
 from __future__ import annotations
@@ -83,18 +98,31 @@ class GiteaRunnerApp:
                 f"{CHART_VERSION}) -n {NAMESPACE}",
             ],
             would_apply=[
-                f"kubectl apply --server-side -n {NAMESPACE} "
-                f"(Secret={RUNNER_CONFIG_SECRET}, key=registrationToken)",
+                # The chart's secret.yaml creates the
+                # Secret shell on first install (placeholder
+                # registrationToken). The apply additionally
+                # ensures the placeholder is set if the
+                # Secret has been wiped — but never
+                # overwrites a VKS-populated value.
+                f"kubectl get/apply secret/{RUNNER_CONFIG_SECRET} "
+                f"-n {NAMESPACE} (regression-guarded placeholder)",
             ],
             notes=[
                 f"image: gitea/runner:{APP_VERSION}",
                 "ephemeral: true (single-use registration)",
                 "persistence: proxmox-lvm-thin PVC (cache + data)",
                 (
-                    "registration token source: static k8s Secret "
-                    f"({RUNNER_CONFIG_SECRET}). Operator pastes "
-                    "the Gitea UI's runner-registration token "
-                    "into the Secret after first-boot."
+                    "registration token source: VaultwardenK8sSync "
+                    f"populates Secret={RUNNER_CONFIG_SECRET} "
+                    f"(key=registrationToken). Operator creates a "
+                    "Secure Note in the Vaultwarden web UI with "
+                    "custom fields namespaces=gitea-runner, "
+                    "secret-name=gitea-runner-config, "
+                    "secret-key=registrationToken — the note body "
+                    "is the Gitea runner registration token from "
+                    "Site Administration > Actions > Runners > "
+                    "Create new runner. See "
+                    "docs/runbooks/setup-vaultwarden-sync.md."
                 ),
             ],
         )
@@ -169,57 +197,117 @@ class GiteaRunnerApp:
             # We don't raise — the runner may take a while to
             # register on a fresh Gitea instance.
 
-        # 5. Codify the registration-token contract. We
-        #    explicitly upsert the gitea-runner-config Secret
-        #    so the runner pod has a deterministic starting
-        #    state. The token is empty by default and the
-        #    operator (or the vaultwarden-k8s-sync app) is
-        #    responsible for populating it.
-        secret_yaml = (
-            "apiVersion: v1\n"
-            "kind: Secret\n"
-            "metadata:\n"
-            f"  name: {RUNNER_CONFIG_SECRET}\n"
-            f"  namespace: {NAMESPACE}\n"
-            "type: Opaque\n"
-            "stringData:\n"
-            "  registrationToken: \"\"\n"
-        )
-        secret_apply = kubectl.apply(
-            manifest=secret_yaml,
+        # 5. The `gitea-runner-config` Secret is owned by
+        #    VaultwardenK8sSync. The chart's secret.yaml
+        #    template creates the Secret shell on first
+        #    install (with a placeholder registrationToken)
+        #    and subsequent helm upgrades leave it alone
+        #    thanks to the `lookup` guard.
+        #
+        #    The apply takes a belt-and-braces approach:
+        #    it inspects the live Secret and only writes
+        #    a placeholder when the Secret is missing OR
+        #    still carries the chart's placeholder value.
+        #    A Secret that VKS has already populated (with
+        #    the real Gitea registration token) is left
+        #    alone. This is the same regression-guard
+        #    pattern used by vaultwarden_k8s_sync.py: write
+        #    only what's missing, never overwrite.
+        live = kubectl.get(
+            resource="secret",
+            name=RUNNER_CONFIG_SECRET,
             namespace=NAMESPACE,
-            server_side=True,
+            jsonpath="{.data.registrationToken}",
         )
-        if secret_apply.returncode != 0:
-            raise RuntimeError(
-                f"kubectl apply Secret={RUNNER_CONFIG_SECRET} "
-                f"failed: rc={secret_apply.returncode} "
-                f"stderr={secret_apply.stderr.strip()[:500]}"
+        existing_b64 = (live.stdout or "").strip()
+        existing_text = ""
+        if existing_b64:
+            import base64
+
+            try:
+                existing_text = base64.b64decode(existing_b64).decode(
+                    "utf-8", errors="replace"
+                )
+            except Exception:
+                existing_text = ""
+        placeholder = "PLACEHOLDER-TOKEN-OVERWRITTEN-BY-VAULTWARDEN-K8S-SYNC"
+        if live.returncode == 0 and existing_text and existing_text != placeholder:
+            ctx.logger.info(
+                "gitea_runner.config_secret_owned_by_vks",
+                secret=RUNNER_CONFIG_SECRET,
+                namespace=NAMESPACE,
+                note="VaultwardenK8sSync has populated the Secret; apply will not overwrite",
             )
+        else:
+            # Recreate the Secret shell with the placeholder.
+            # We use `kubectl apply --server-side` with the
+            # imperative object style so we always end up with
+            # exactly one Secret. If VKS has since written a
+            # real token, the next apply sees the populated
+            # value and stops touching it.
+            secret_yaml = (
+                "apiVersion: v1\n"
+                "kind: Secret\n"
+                "metadata:\n"
+                f"  name: {RUNNER_CONFIG_SECRET}\n"
+                f"  namespace: {NAMESPACE}\n"
+                "type: Opaque\n"
+                "stringData:\n"
+                f'  registrationToken: "{placeholder}"\n'
+            )
+            secret_apply = kubectl.apply(
+                manifest=secret_yaml,
+                namespace=NAMESPACE,
+                server_side=True,
+            )
+            if secret_apply.returncode != 0:
+                raise RuntimeError(
+                    f"kubectl apply Secret={RUNNER_CONFIG_SECRET} "
+                    f"failed: rc={secret_apply.returncode} "
+                    f"stderr={secret_apply.stderr.strip()[:500]}"
+                )
+            ctx.logger.info(
+                "gitea_runner.config_secret_seeded_with_placeholder",
+                secret=RUNNER_CONFIG_SECRET,
+                namespace=NAMESPACE,
+                note="VKS will overwrite the placeholder on the next sync cycle",
+            )
+
+        # 6. Post-apply next step. The operator must:
+        #    a. Finish Gitea first-boot (set admin password).
+        #    b. Site Administration -> Actions -> Runners ->
+        #       Create new runner. Copy the registration
+        #       token (do NOT paste it into kubectl — VKS
+        #       owns the Secret).
+        #    c. In the Vaultwarden web UI, create a Secure
+        #       Note whose body IS the registration token,
+        #       and set the custom fields:
+        #         namespaces = gitea-runner
+        #         secret-name = gitea-runner-config
+        #         secret-key = registrationToken
+        #       VaultwardenK8sSync polls the server and
+        #       writes the body into the gitea-runner-config
+        #       Secret within one sync interval (~5 min by
+        #       default). The runner pod picks up the new
+        #       token via volume-mount refresh within ~30s.
         ctx.logger.info(
-            "gitea_runner.config_secret_seeded",
+            "gitea_runner.waiting_for_vks_token",
             secret=RUNNER_CONFIG_SECRET,
             namespace=NAMESPACE,
-            token_source="operator_manual",
-        )
-
-        # 6. Post-apply next step. The operator must fetch a
-        #    registration token from Gitea and populate the
-        #    Secret.
-        ctx.logger.info(
-            "gitea_runner.waiting_for_token",
+            vks_custom_fields={
+                "namespaces": NAMESPACE,
+                "secret-name": RUNNER_CONFIG_SECRET,
+                "secret-key": "registrationToken",
+            },
             next_step=(
-                "open https://gitea.<base_domain> in a browser "
-                "and finish first-boot (set admin password), "
-                "then Site Administration -> Actions -> Runners "
-                "-> Create new runner. Copy the registration "
-                "token and update the Secret: "
-                f"`kubectl -n {NAMESPACE} create secret "
-                f"generic {RUNNER_CONFIG_SECRET} "
-                "--from-literal=registrationToken=<TOKEN> "
-                "--dry-run=client -o yaml | kubectl apply -f -`. "
-                "The runner pod will pick up the new token "
-                "within ~30s."
+                "create a Secure Note in the Vaultwarden web UI "
+                "with the custom fields namespaces/secret-name/"
+                "secret-key printed in `vks_custom_fields` above; "
+                "body = the Gitea runner registration token from "
+                "Site Administration > Actions > Runners > "
+                "Create new runner. VKS will populate "
+                f"{RUNNER_CONFIG_SECRET} within one sync "
+                "interval. See docs/runbooks/setup-vaultwarden-sync.md"
             ),
         )
 

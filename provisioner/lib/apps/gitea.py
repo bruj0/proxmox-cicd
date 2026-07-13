@@ -201,9 +201,14 @@ class GiteaApp:
                 "admin password and finish first-boot config. "
                 "Then create a runner registration token via "
                 "the UI (Site Administration -> Actions -> "
-                "Runners -> Create new runner) and update "
-                "secret gitea-runner-config in namespace "
-                "gitea-runner (key: registrationToken)."
+                "Runners -> Create new runner) and store it "
+                "in Vaultwarden (NOT directly in the k8s "
+                "Secret — see docs/runbooks/setup-vaultwarden-sync.md "
+                "section 'Wiring an app to a Vaultwarden item'). "
+                "VaultwardenK8sSync writes it into secret "
+                "gitea-runner-config in namespace gitea-runner "
+                "(key: registrationToken) within one sync "
+                "interval."
             ),
         )
 
@@ -218,8 +223,13 @@ class GiteaApp:
                 f"open https://{host} in a browser and finish "
                 "first-boot config (set the admin password). "
                 "Then create a runner registration token in the "
-                "Gitea UI and update secret gitea-runner-config "
-                f"in namespace gitea-runner (key: registrationToken)."
+                "Gitea UI and store it in Vaultwarden (Secure "
+                "Note with custom fields namespaces=gitea-runner, "
+                "secret-name=gitea-runner-config, "
+                "secret-key=registrationToken). VaultwardenK8sSync "
+                "writes the Secret; do not kubectl-apply the "
+                "token manually. See "
+                "docs/runbooks/setup-vaultwarden-sync.md."
             ),
         )
 

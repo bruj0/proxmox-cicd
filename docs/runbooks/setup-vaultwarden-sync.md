@@ -198,5 +198,100 @@ to run VKS without patching the upstream.
 | `infra/clusters/cicd/catalog.yaml` | enables the app for the cluster |
 | `values/vaultwarden-kubernetes-secrets.yaml` | chart values (server URL, log level, sync interval) |
 | `versions.yaml` | pin chart 2.0.0 / appVersion 2.0.0 |
+
+## Wiring an app to a Vaultwarden item (gitea-runner example)
+
+The `gitea-runner` chart mounts a `gitea-runner-config`
+Secret (key `registrationToken`) into the runner pod
+as a volume at `/etc/runner/token`. The
+`provisioner/lib/apps/gitea_runner.py` apply step is
+intentionally **read-only** on that Secret — VKS is
+the single writer. To populate the Secret:
+
+1. Finish Gitea first-boot (set the admin password).
+2. Site Administration → Actions → Runners → Create
+   new runner → copy the registration token.
+3. In the Vaultwarden web UI, create a Secure Note:
+
+   - **Name**: `gitea-runner-token` (anything; this is
+     not used as the Secret name — the `secret-name`
+     custom field overrides it)
+   - **Notes**: paste the Gitea registration token
+     verbatim
+   - **Custom fields** (case-insensitive):
+     - `namespaces` = `gitea-runner`
+     - `secret-name` = `gitea-runner-config`
+     - `secret-key` = `registrationToken`
+
+4. VKS picks up the new item within one sync interval
+   (default 5 min) and writes it into
+   `gitea-runner-config/registrationToken` in the
+   `gitea-runner` namespace. The runner pod's volume
+   mount refreshes within ~30s and the runner leaves
+   `CrashLoopBackOff`, registers against Gitea, and
+   transitions to `Ready`.
+
+To verify:
+
+```sh
+KUBECONFIG=../proxmox-k3s/infra/clusters/cicd/kubeconfig.yaml \
+  kubectl -n gitea-runner get secret gitea-runner-config \
+  -o jsonpath='{.data.registrationToken}' | base64 -d ; echo
+
+KUBECONFIG=../proxmox-k3s/infra/clusters/cicd/kubeconfig.yaml \
+  kubectl -n gitea-runner get pods -l app.kubernetes.io/name=gitea-runner
+```
+
+The first command echoes the registration token
+(proves VKS wrote the data); the second should show
+the runner pods in `Running 1/1` (proves the
+mount refreshed and the runner registered).
+
+## Per-item overrides (cheat-sheet)
+
+The same pattern works for any other app that needs a
+Secret populated by VKS. The only knobs are the four
+custom fields:
+
+| Custom field | Default | Effect |
+| --- | --- | --- |
+| `namespaces` | (item name sanitized → ns) | target k8s namespace(s); comma-separated |
+| `secret-name` | (item name sanitized) | target k8s Secret name |
+| `secret-key` | `notes` (Secure Note) / `password` (Login) | the data key VKS writes the value under |
+| `secret-key-username` | `username` (Login) | optional second data key from the Login's username |
+| `secret-key-password` | `password` (Login) | optional second data key from the Login's password |
+
+Multiple items with the same `secret-name` merge into
+a single k8s Secret. The orchestrator never writes to
+these Secrets — VKS owns them end-to-end.
+
+## Removing the old bitwarden-sm-operator (legacy cleanup)
+
+If the cluster was previously bootstrapped with the
+`bitwarden-sm-operator` chart (which used the
+Bitwarden Secrets Manager API + a CRD called
+`bitwardensecrets.k8s.bitwarden.com`), the VKS
+swap leaves behind a helm release + CRD that VKS
+no longer needs. To remove them:
+
+```sh
+# uninstall the helm release (drops the CRD too in recent versions)
+helm -n sm-operator-system uninstall sm-operator
+
+# delete the namespace if it's still around
+kubectl delete ns sm-operator-system
+
+# delete any leftover BitwardenSecret CRs (only if you kept them around)
+kubectl get bitwardensecrets.k8s.bitwarden.com -A
+```
+
+After this, `helm list -A` no longer shows
+`sm-operator`, and `kubectl api-resources | grep bitwarden`
+returns no rows. The VKS-owned Secrets are untouched.
+
+The current `cicdctl apply cicd` does not touch the
+`sm-operator` chart or the legacy CRD — they're
+operator-local leftovers and VKS is the only secret
+sync path going forward.
 | `.env` (gitignored) | operator-local client_id / client_secret / master_password |
 | `infra/secrets/...` (gitignored) | not used; VKS lives entirely in-cluster |
