@@ -1,5 +1,14 @@
 # `vaultwarden-seed-note.py` — create a Vaultwarden Secure Note for VKS
 
+> **Status (2026-07-14): legacy.** This script is kept on
+> disk for backwards compatibility. New code should use
+> [`provisioner.lib.vaultwarden`](./vaultwarden-notes.md)
+> (the in-process library) or the `vaultwarden-notes` CLI
+> (a multi-subcommand wrapper around the library). The
+> underlying wire protocol is identical — see
+> [`docs/vaultwarden-notes.md`](./vaultwarden-notes.md) §
+> "Differences from the legacy script".
+
 CLI that creates a Bitwarden-encrypted **Secure Note** in a
 Vaultwarden (or Bitwarden-compatible) vault so the
 [`vaultwarden-k8s-sync`][vks-doc] app picks it up on its next
@@ -279,6 +288,10 @@ email or password mismatch is on the shell side.
 
 ## See also
 
+- [docs/vaultwarden-notes.md](./vaultwarden-notes.md) — the
+  in-process library + multi-subcommand CLI that **replaces**
+  this script. New code should import `VaultwardenClient`
+  directly or run `uv run vaultwarden-notes seed …`.
 - [docs/vaultwarden-sync.md](./vaultwarden-sync.md) — how VKS
   consumes the ciphers this script creates.
 - [AGENTS.md § "Adding a third-party / chart-in-tree app"][ag-tpa]

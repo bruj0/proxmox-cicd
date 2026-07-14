@@ -216,3 +216,39 @@ The smoke test in the runbook (creating a
 `namespaces=default`) takes about 30s end-to-end
 and produces a k8s Secret in the `default`
 namespace.
+
+## Sharing Secrets with chart-installed apps
+
+When a chart-installed app (helm-owned) and VKS
+both want to manage the same Secret, the
+`managed-by` label conflict surfaces as a kubectl
+field-manager error on every `helm upgrade`. The
+fix is to scope each controller's ownership to a
+distinct set of fields:
+
+- helm owns the Deployment, ServiceAccount, and
+  other chart resources.
+- VKS owns the Secret's data, labels, and
+  annotations.
+
+The orchestrator enforces this for the
+`cloudflare-tunnel-remote` chart via a helm
+`--post-renderer` overlay that strips the
+helm-emitted labels from the chart's Secret before
+kubectl apply sees it. See
+[`docs/cloudflared-helm-post-renderer.md`](./cloudflared-helm-post-renderer.md)
+for the full design.
+
+## See also
+
+- [`docs/vaultwarden-notes.md`](./vaultwarden-notes.md) —
+  the in-process `VaultwardenClient` library + `vaultwarden-notes`
+  CLI used by the orchestrator to seed VKS notes.
+- [`docs/vaultwarden-seed-note.md`](./vaultwarden-seed-note.md) —
+  the legacy `scripts/vaultwarden-seed-note.py` script (kept
+  for backwards compat).
+- [`docs/runbooks/setup-vaultwarden-sync.md`](./runbooks/setup-vaultwarden-sync.md) —
+  the operator runbook for one-time VKS setup.
+- [`docs/cloudflared-helm-post-renderer.md`](./cloudflared-helm-post-renderer.md) —
+  how the orchestrator breaks the helm ↔ VKS field-manager race
+  for chart-installed apps that VKS also manages.

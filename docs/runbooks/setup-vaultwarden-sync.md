@@ -293,5 +293,29 @@ The current `cicdctl apply cicd` does not touch the
 `sm-operator` chart or the legacy CRD — they're
 operator-local leftovers and VKS is the only secret
 sync path going forward.
+
+## Inspecting what VKS sees
+
+The `vaultwarden-notes` CLI (a multi-subcommand wrapper
+around `provisioner.lib.vaultwarden`) is the operator's
+tool for inspecting the Vaultwarden vault from the
+terminal:
+
+```sh
+# List every cipher VKS will pick up.
+echo -n "$MASTER_PASSWORD" > /tmp/vw.pw
+chmod 600 /tmp/vw.pw
+uv run vaultwarden-notes list --password-file /tmp/vw.pw
+
+# Decrypt one cipher (sanity-check the body / custom fields).
+uv run vaultwarden-notes decrypt --id <cipher-id> --password-file /tmp/vw.pw
+
+# Delete a cipher by id (clean up smoke-test leftovers).
+uv run vaultwarden-notes delete --id <cipher-id> --password-file /tmp/vw.pw
+```
+
+For the full CLI reference and the in-process
+`VaultwardenClient` library, see
+[`docs/vaultwarden-notes.md`](../vaultwarden-notes.md).
 | `.env` (gitignored) | operator-local client_id / client_secret / master_password |
 | `infra/secrets/...` (gitignored) | not used; VKS lives entirely in-cluster |

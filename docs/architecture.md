@@ -65,6 +65,31 @@ dependencies. The orchestrator owns nothing app-specific —
 it loops over the AppSpec registry and calls
 `.plan()` / `.apply()` / `.destroy()` / `.status()`.
 
+The same principle extends to two cross-cutting packages:
+
+- `provisioner/lib/vaultwarden/` — the Bitwarden / Vaultwarden
+  wire-protocol implementation. The `crypto.py` /
+  `http.py` / `client.py` / `note.py` / `kubeconfig.py`
+  modules split the Bitwarden protocol at its natural
+  seams (symmetric primitives, HTTP helpers with the right
+  `User-Agent` + `Bitwarden-Client-Version` headers,
+  high-level cipher CRUD, note-payload builders, kubeconfig
+  resolution). Consumers: the `vaultwarden-notes` CLI in
+  `provisioner/lib/cli/vaultwarden_notes.py`, the
+  `cloudflared` app's in-process `_seed_vaultwarden_note()`,
+  and the unit tests under `provisioner/tests/`.
+  See [`docs/vaultwarden-notes.md`](vaultwarden-notes.md).
+- `provisioner/lib/helm_post_renderers/` — small Python
+  scripts that `helm upgrade --install --post-renderer`
+  forks as child processes. The orchestrator wires one in
+  via `extra_args=("--post-renderer", …)`; the script reads
+  the rendered YAML on stdin, strips helm-emitted labels /
+  annotations from one targeted document, and writes the
+  modified stream to stdout. Used to break the
+  chart-managed-Secret ↔ VKS-managed-Secret field-manager
+  race for `cloudflare-tunnel-remote`. See
+  [`docs/cloudflared-helm-post-renderer.md`](cloudflared-helm-post-renderer.md).
+
 ### O — Open/Closed
 
 Adding `harbor` or `argocd` is a one-file change:
