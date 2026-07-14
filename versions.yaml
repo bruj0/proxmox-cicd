@@ -74,3 +74,37 @@ vaultwarden_k8s_sync:
       source: "ghcr.io/antoniolago/vaultwarden-kubernetes-secrets"
       fetched: "2026-07-13"
       notes: "Sync service image tag matches chart 2.0.0 appVersion."
+
+# -----------------------------------------------------------------------------
+# cloudflared — Cloudflare Tunnel to expose gitea (and any
+# other Gateway-fronted app) on a public Cloudflare URL.
+#
+# What this app does on apply:
+#   1. Reads CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_ZONE_ID +
+#      CLOUDFLARE_GLOBAL_API_KEY + CLOUDFLARE_GLOBAL_API_EMAIL
+#      from .env.
+#   2. If a tunnel named `gitea-tunnel` doesn't already exist
+#      on Cloudflare, calls POST /accounts/:id/cfd_tunnel to
+#      create one and captures the JSON service-token secret.
+#   3. Ensures a CNAME record `<hostname> -> <tunnel-id>.cfargotunnel.com`
+#      exists on the zone, proxied (orange-cloud).
+#   4. Installs the cloudflare/cloudflare-tunnel helm chart
+#      (chart 0.3.2 / app 2024.8.3) into the cluster with
+#      the tunnel credentials + the gitea ingress rule.
+#
+# Source: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/
+# Fetched: 2026-07-14
+# -----------------------------------------------------------------------------
+cloudflared:
+  chart:
+    "0.3.2":
+      chart_repo: "https://cloudflare.github.io/helm-charts"
+      chart_name: "cloudflare-tunnel"
+      source: "https://github.com/cloudflare/helm-charts"
+      fetched: "2026-07-14"
+      notes: "cloudflare/cloudflare-tunnel chart 0.3.2 (app 2024.8.3)."
+  image:
+    "2024.8.3":
+      source: "https://hub.docker.com/r/cloudflare/cloudflared/tags"
+      fetched: "2026-07-14"
+      notes: "cloudflared daemon image; pinned to chart's appVersion."

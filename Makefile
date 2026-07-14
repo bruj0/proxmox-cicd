@@ -73,7 +73,7 @@ validate:
 # ------------------------------------------------------ internal targets
 
 test:
-	@$(PYTHON) -m pytest provisioner/tests/ -q
+	@uv run --quiet pytest provisioner/tests/ scripts/tests/ -q
 
 lint:
 	@$(PYTHON) -m ruff check provisioner/   @$(PYTHON) -m mypy provisioner/lib/

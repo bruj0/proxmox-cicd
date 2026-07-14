@@ -1,0 +1,34 @@
+# values/cloudflared.yaml — in-tree cloudflared chart
+# values template.
+#
+# The cloudflared app overlays the operator-local values
+# (tunnelName, tunnelId, accountTag, upstream.hostname,
+# upstream.service) into a gitignored
+# `values/cloudflared.values-rendered.yaml` at apply-time
+# and passes that file to `helm upgrade --install` via
+# `-f`. The committed file below is a placeholder that
+# intentionally omits every operator-local value; the
+# rendered file is the only one helm actually reads.
+#
+# Why a placeholder + render pattern (mirrors
+# vaultwarden_k8s_sync): the chart's required values
+# (tunnelName, tunnelId, accountTag, upstream.*) all
+# carry operator-specific identifiers (Cloudflare
+# account tag, tunnel UUID, ingress hostname). Hand-
+# editing them into a committed file would leak those
+# IDs; the apply re-renders on every run, so the
+# committed file stays safe to share.
+
+replicaCount: 1
+
+image:
+  repository: cloudflare/cloudflared
+  pullPolicy: IfNotPresent
+
+resources:
+  limits:
+    cpu: 200m
+    memory: 128Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi

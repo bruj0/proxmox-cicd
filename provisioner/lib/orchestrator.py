@@ -16,9 +16,10 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from .apps import AppApplyResult, all_apps
-from .catalog import CatalogError, load_catalog, validate_enabled_apps_exist
+from .catalog import Catalog, CatalogError, load_catalog, validate_enabled_apps_exist
 from .container import Container
 from .output_writer import write_apps_json
 from .planner import build_plan
@@ -53,6 +54,43 @@ class Orchestrator:
     def _set_cluster_env(self, cluster: str) -> None:
         """Apps read this env var to find the kubeconfig path."""
         os.environ["PROXMOX_CICD_CLUSTER"] = cluster
+
+    @staticmethod
+    def _resolve_apply_order(
+        catalog: Catalog,
+        app_filter: list[str] | None,
+        log: Any,
+    ) -> list[str]:
+        """Decide which apps to iterate, in what order.
+
+        `None` (the default, no `--app` flag) means
+        "every enabled app, sorted alphabetically by
+        catalog order" (which is what the catalog
+        returns).
+
+        A non-empty `app_filter` is treated as the
+        authoritative order (operator-typed order, not
+        alphabetical). We still validate that every
+        filter entry is enabled in the catalog — a
+        typo or a disabled app surfaces here as a
+        CatalogError instead of silently no-op'ing.
+        """
+        if not app_filter:
+            return catalog.enabled_app_names()
+        enabled = set(catalog.enabled_app_names())
+        for name in app_filter:
+            if name not in enabled:
+                raise CatalogError(
+                    f"--app {name!r} is registered but not "
+                    f"enabled in the catalog (enabled: "
+                    f"{sorted(enabled)})"
+                )
+        log.info(
+            "apply.app_filter_resolved",
+            requested=app_filter,
+            applied=app_filter,
+        )
+        return app_filter
 
     # ------------------------------------------------------ validate
 
@@ -104,15 +142,20 @@ class Orchestrator:
 
     # ------------------------------------------------------ plan
 
-    def plan(self, cluster: str) -> int:
+    def plan(self, cluster: str, app_filter: list[str] | None = None) -> int:
         log = self.container.logger
-        log.info("plan.started", cluster=cluster)
+        log.info(
+            "plan.started",
+            cluster=cluster,
+            app_filter=app_filter,
+        )
         try:
             self._set_cluster_env(cluster)
             plan_diff = build_plan(
                 self.container,
                 cluster,
                 self._catalog_path(cluster),
+                app_filter=app_filter,
             )
         except CatalogError as exc:
             log.error(
@@ -134,14 +177,25 @@ class Orchestrator:
 
     # ------------------------------------------------------ apply
 
-    def apply(self, cluster: str) -> int:
+    def apply(
+        self,
+        cluster: str,
+        app_filter: list[str] | None = None,
+    ) -> int:
         log = self.container.logger
-        log.info("apply.started", cluster=cluster)
+        log.info(
+            "apply.started",
+            cluster=cluster,
+            app_filter=app_filter,
+        )
         try:
             self._set_cluster_env(cluster)
             catalog = load_catalog(self._catalog_path(cluster), cluster)
             validate_enabled_apps_exist(
                 catalog, [a.name for a in all_apps()]
+            )
+            apply_order = self._resolve_apply_order(
+                catalog, app_filter, log
             )
         except CatalogError as exc:
             log.error(
@@ -155,7 +209,7 @@ class Orchestrator:
         log.info(
             "apply.catalog_loaded",
             cluster=cluster,
-            apps=catalog.enabled_app_names(),
+            apps=apply_order,
         )
 
         # Pre-flight: kubectl + helm on PATH, kubeconfig exists.
@@ -179,7 +233,7 @@ class Orchestrator:
         catalog_dict = catalog.as_dict()
         applied: list[AppApplyResult] = []
 
-        for name in catalog.enabled_app_names():
+        for name in apply_order:
             app_cls = registry.get(name)
             if app_cls is None:
                 log.warn(
@@ -253,14 +307,25 @@ class Orchestrator:
 
     # ------------------------------------------------------ destroy
 
-    def destroy(self, cluster: str) -> int:
+    def destroy(
+        self,
+        cluster: str,
+        app_filter: list[str] | None = None,
+    ) -> int:
         log = self.container.logger
-        log.info("destroy.started", cluster=cluster)
+        log.info(
+            "destroy.started",
+            cluster=cluster,
+            app_filter=app_filter,
+        )
         try:
             self._set_cluster_env(cluster)
             catalog = load_catalog(self._catalog_path(cluster), cluster)
             validate_enabled_apps_exist(
                 catalog, [a.name for a in all_apps()]
+            )
+            destroy_order = self._resolve_apply_order(
+                catalog, app_filter, log
             )
         except CatalogError as exc:
             log.error(
@@ -273,8 +338,10 @@ class Orchestrator:
 
         # Destroy in reverse registration order so dependents
         # (gitea-runner) are removed before their dependencies
-        # (gitea).
-        ordered = list(reversed(catalog.enabled_app_names()))
+        # (gitea). When `--app` narrows the set, reverse that
+        # subset instead so the relative ordering within the
+        # filter is preserved.
+        ordered = list(reversed(destroy_order))
         registry = {a.name: a for a in all_apps()}
         for name in ordered:
             app_cls = registry.get(name)

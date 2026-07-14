@@ -40,6 +40,46 @@ EXIT_STATUS = 7
 EXIT_VALIDATE = 8
 
 
+def _validate_app_filter(
+    requested: list[str] | None,
+) -> list[str] | None:
+    """Validate the `--app` flag(s) against the registry.
+
+    Returns the order-preserving list of app names if
+    supplied, or `None` (= "every enabled app") if the
+    flag was not passed.
+
+    A misspelled app name produces a clear error listing
+    the known apps and the exit code for catalog errors
+    (EXIT_CATALOG). We resolve the registry at call time
+    rather than at import time so the force-imports below
+    have already populated `_REGISTRY`.
+    """
+    if not requested:
+        return None
+    from .lib.apps import all_apps
+
+    known = {a.name for a in all_apps()}
+    # Preserve order + dedupe. Operators occasionally
+    # repeat the flag with the same name; treating that as
+    # "still apply once" keeps the iteration loop trivial.
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for name in requested:
+        if name in seen:
+            continue
+        seen.add(name)
+        if name not in known:
+            print(
+                f"apply: --app {name!r} is not a registered "
+                f"app; known: {sorted(known)}",
+                file=sys.stderr,
+            )
+            sys.exit(EXIT_CATALOG)
+        ordered.append(name)
+    return ordered
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="cicdctl",
@@ -61,6 +101,17 @@ def main() -> int:
 
     p_plan = sub.add_parser("plan", help="Diff desired vs live apps.")
     add_cluster_arg(p_plan)
+    p_plan.add_argument(
+        "--app",
+        "-a",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Restrict the plan to one or more apps (repeat "
+            "to select multiple). Default: every enabled app."
+        ),
+    )
 
     p_apply = sub.add_parser("apply", help="Install app catalog (idempotent).")
     add_cluster_arg(p_apply)
@@ -68,6 +119,23 @@ def main() -> int:
         "--auto-approve",
         action="store_true",
         help="Skip the confirmation prompt.",
+    )
+    p_apply.add_argument(
+        "--app",
+        "-a",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Restrict the apply to a single app (repeat to "
+            "select multiple, e.g. `--app cloudflared --app "
+            "gitea`). Default: every enabled app in the "
+            "catalog. The flag is order-preserving: apps are "
+            "applied in the order you list them, not the "
+            "catalog order. Useful for re-running one app "
+            "after a failure or for skipping slow ones in a "
+            "tight iteration loop."
+        ),
     )
 
     p_destroy = sub.add_parser("destroy", help="Uninstall every app.")
@@ -104,6 +172,7 @@ def main() -> int:
     from .lib.apps import (
         vaultwarden_k8s_sync as _vaultwarden_k8s_sync,  # noqa: F401
     )
+    from .lib.apps import cloudflared as _cloudflared  # noqa: F401
 
     container = Container.production(
         proxmox_k3s_repo=args.proxmox_k3s_repo,
@@ -120,26 +189,41 @@ def main() -> int:
     )
 
     exit_code = EXIT_PREREQ
+    # `--app` accepts a list (repeat the flag) or `None`
+    # (every enabled app). Validate the names here so the
+    # operator gets a fast, clear error instead of a
+    # downstream traceback when one is misspelled.
+    selected = _validate_app_filter(args.app) if hasattr(args, "app") else None
     if args.command == "plan":
-        exit_code = orch.plan(args.cluster)
+        exit_code = orch.plan(args.cluster, app_filter=selected)
     elif args.command == "apply":
         if not args.auto_approve:
+            target = (
+                f"apps [{', '.join(selected)}]"
+                if selected
+                else "the full enabled app catalog"
+            )
             print(
-                f"About to install app catalog for cluster "
+                f"About to install {target} for cluster "
                 f"'{args.cluster}'."
             )
             print("Pass --auto-approve to skip this prompt.")
             sys.exit(EXIT_OK)
-        exit_code = orch.apply(args.cluster)
+        exit_code = orch.apply(args.cluster, app_filter=selected)
     elif args.command == "destroy":
         if not args.auto_approve:
+            target = (
+                f"apps [{', '.join(selected)}]"
+                if selected
+                else "the full enabled app catalog"
+            )
             print(
-                f"About to DESTROY app catalog for cluster "
+                f"About to DESTROY {target} for cluster "
                 f"'{args.cluster}'."
             )
             print("Pass --auto-approve to skip this prompt.")
             sys.exit(EXIT_OK)
-        exit_code = orch.destroy(args.cluster)
+        exit_code = orch.destroy(args.cluster, app_filter=selected)
     elif args.command == "status":
         exit_code = orch.status(args.cluster)
     elif args.command == "validate":

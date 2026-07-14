@@ -6,6 +6,9 @@ requires-python = ">=3.11"
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "proxmox-cicd" }]
+dependencies = [
+    "cryptography>=49.0.0",
+]
 
 # No runtime third-party dependencies. The provisioner uses only
 # the Python stdlib (subprocess for helm/kubectl, json for the
@@ -45,3 +48,10 @@ strict = true
 explicit_package_bases = true
 files = ["provisioner/lib", "provisioner/cli.py", "provisioner/__main__.py"]
 exclude = ["provisioner/tests/.*"]
+
+[dependency-groups]
+dev = [
+    "mypy>=2.3.0",
+    "pytest>=9.1.1",
+    "ruff>=0.15.21",
+]

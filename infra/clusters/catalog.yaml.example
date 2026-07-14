@@ -70,3 +70,15 @@ apps:
   # Configured via values/vaultwarden-kubernetes-secrets.yaml.
   vaultwarden-k8s-sync:
     enabled: true
+
+  # Cloudflare Tunnel — exposes the gitea Gateway on a
+  # public Cloudflare URL. Idempotent: on first apply the
+  # app mints a scoped API token using the global API
+  # key in .env (used exactly once, never persisted),
+  # caches it under infra/secrets/, then ensures the
+  # tunnel + DNS record exist and installs the
+  # cloudflare/cloudflare-tunnel helm chart. Subsequent
+  # applies are no-ops until the operator rotates the
+  # token or changes the public hostname.
+  cloudflared:
+    enabled: true
