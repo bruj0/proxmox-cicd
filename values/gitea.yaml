@@ -169,10 +169,8 @@ gitea:
       # ROOT_URL, DOMAIN, SSH_DOMAIN are auto-derived by the
       # chart from the HTTPRoute's `host:` field at apply time.
       ENABLE_PPROF: false
-
-# 10. Probe — use the documented /api/healthz endpoint
-#     (https://docs.gitea.com/installation/install-on-kubernetes).
-gitea:
+  # Probes — use the documented /api/healthz endpoint
+  # (https://docs.gitea.com/installation/install-on-kubernetes).
   livenessProbe:
     enabled: true
     httpGet:
