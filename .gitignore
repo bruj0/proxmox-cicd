@@ -43,6 +43,12 @@ logs/
 # committed.
 values/*.values-rendered.yaml
 
+# Operator-scoped secrets. The cloudflared app mints a
+# scoped Cloudflare API token at first apply and writes
+# it here (mode 0600); subsequent applies reuse the cached
+# token instead of re-prompting for the global API key.
+infra/secrets/
+
 # Editor noise
 .vscode/
 .idea/
@@ -52,3 +58,9 @@ values/*.values-rendered.yaml
 
 # OS junk
 Thumbs.db
+
+# Node tooling — `npm install @mermaid-js/mermaid-cli` writes
+# node_modules/ beside package.json for ad-hoc diagram validation.
+node_modules/
+package-lock.json
+.npm/
