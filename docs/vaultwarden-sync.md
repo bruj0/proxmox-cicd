@@ -239,8 +239,18 @@ kubectl apply sees it. See
 [`docs/cloudflared-helm-post-renderer.md`](./cloudflared-helm-post-renderer.md)
 for the full design.
 
+For the **end-to-end Cloudflare Tunnel story**
+(how the tunnel is minted, where the token lives in
+Vaultwarden, how the chart consumes it, how to
+rotate it), see the canonical doc:
+[`docs/cloudflare-tunnel.md`](./cloudflare-tunnel.md).
+
 ## See also
 
+- [`docs/cloudflare-tunnel.md`](./cloudflare-tunnel.md) —
+  canonical doc for the Cloudflare Tunnel: end-to-end
+  flow, Vaultwarden note contract, and rotation
+  runbook.
 - [`docs/vaultwarden-notes.md`](./vaultwarden-notes.md) —
   the in-process `VaultwardenClient` library + `vaultwarden-notes`
   CLI used by the orchestrator to seed VKS notes.

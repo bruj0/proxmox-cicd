@@ -178,6 +178,16 @@ class VaultwardenClient:
         Cipher names and field values are returned ENCRYPTED.
         Use ``decrypt_cipher_name`` /
         ``decrypt_cipher_field`` to read them.
+
+        Response shape compatibility: Vaultwarden 1.34.0+
+        (and the upstream Bitwarden cloud) now return a
+        paginated envelope of the form
+        ``{"object": "list", "data": [<cipher>, ...],
+        "continuationToken": null}``. Older Vaultwarden
+        releases (and most tests) return a bare JSON list.
+        This method accepts both and always returns the
+        flat list of ciphers — callers don't need to
+        special-case the envelope.
         """
         params: dict[str, str] = {}
         if organization_id is not None:
@@ -188,19 +198,31 @@ class VaultwardenClient:
         if params:
             url += "?" + urllib.parse.urlencode(params)
         resp = http_get_json(self._opener, url, self.access_token)
-        if not isinstance(resp, list):
-            raise RuntimeError(
-                f"/api/ciphers response was not a list; "
-                f"got type {type(resp).__name__}"
-            )
-        return resp
+        # Paginated envelope (Vaultwarden 1.34.0+, Bitwarden
+        # cloud). The envelope also carries `continuationToken`
+        # — we don't follow it here because the cloud-side
+        # personal vault is bounded in size, but the helper
+        # below documents the shape for callers that need it.
+        if isinstance(resp, dict) and resp.get("object") == "list" and isinstance(
+            resp.get("data"), list
+        ):
+            return cast(list[dict[str, Any]], resp["data"])
+        if isinstance(resp, list):
+            return cast(list[dict[str, Any]], resp)
+        raise RuntimeError(
+            f"/api/ciphers response was not a list; "
+            f"got type {type(resp).__name__}"
+        )
 
     def get_cipher(self, cipher_id: str) -> dict[str, Any]:
         """GET /api/ciphers/{id} → single cipher dict."""
-        return http_get_json(
-            self._opener,
-            f"{self.server_url}/api/ciphers/{cipher_id}",
-            self.access_token,
+        return cast(
+            dict[str, Any],
+            http_get_json(
+                self._opener,
+                f"{self.server_url}/api/ciphers/{cipher_id}",
+                self.access_token,
+            ),
         )
 
     def decrypt_cipher_name(self, cipher: dict[str, Any]) -> str:
@@ -218,18 +240,26 @@ class VaultwardenClient:
         name: str | None = None,
         index: int | None = None,
     ) -> str:
-        """Decrypt a single custom field's value.
+        """Decrypt a single custom field's **value**.
 
-        Match by ``name`` (the decrypted name) or by
-        ``index`` (0-based position in cipher['fields']).
-        Raises ``KeyError`` if no match, ``ValueError`` on
-        decrypt failure.
+        Match by ``name`` (the decrypted field name — i.e.
+        the result of :meth:`decrypt_cipher_field_name`) or
+        by ``index`` (0-based position in
+        ``cipher['fields']``). Raises ``KeyError`` if no
+        match, ``ValueError`` on decrypt failure.
 
-        Note: field NAMES on a cipher are themselves
-        encrypted Bitwarden EncStrings (so the field's
-        ``name`` property is ``"2.<...>|<...>|<...>"``).
-        We decrypt each candidate field's name and
-        compare.
+        Both Bitwarden field names AND values are stored
+        as encrypted EncStrings, so lookups by name have
+        to decrypt every candidate's name to compare.
+        When you have the index handy (you already iterated
+        ``cipher['fields']``), prefer ``index=`` — it's
+        O(1) instead of O(n).
+
+        See :meth:`decrypt_cipher_field_name` for the
+        symmetric helper that returns the **name** of a
+        field by index. The name itself is encrypted too,
+        so the helper takes an index (not a decrypted
+        name) and returns the decrypted plaintext name.
         """
         fields = cipher.get("fields") or []
         for i, f in enumerate(fields):
@@ -246,6 +276,39 @@ class VaultwardenClient:
             f"name={name!r} index={index!r} "
             f"(cipher has {len(fields)} fields)"
         )
+
+    def decrypt_cipher_field_name(
+        self,
+        cipher: dict[str, Any],
+        *,
+        index: int,
+    ) -> str:
+        """Decrypt a single custom field's **name** by index.
+
+        Field names on a cipher are themselves encrypted
+        Bitwarden EncStrings (``"2.<ct>|<iv>|<mac>"``),
+        so the ``name`` property in
+        ``cipher['fields'][i]['name']`` is opaque.
+        This helper returns the decrypted plaintext name
+        (e.g. ``"namespaces"``,
+        ``"secret-name"``, ``"secret-key"``).
+
+        Pairs with :meth:`decrypt_cipher_field` which
+        returns the value. The two-call shape is
+        deliberate — it's the only way to read both
+        halves without exposing the underlying EncString
+        format to callers.
+
+        Raises ``IndexError`` if ``index`` is out of range,
+        ``ValueError`` on decrypt failure.
+        """
+        fields = cipher.get("fields") or []
+        if index < 0 or index >= len(fields):
+            raise IndexError(
+                f"field index {index} out of range "
+                f"(cipher has {len(fields)} fields)"
+            )
+        return decrypt_str_from_vault(fields[index]["name"], self.user_key)
 
     def decrypt_cipher_notes(self, cipher: dict[str, Any]) -> str:
         """Decrypt ``cipher['notes']`` (the Secure Note body)."""

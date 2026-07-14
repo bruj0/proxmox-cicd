@@ -106,13 +106,12 @@ password under the `password` data key:
 echo -n "$NEW_PASSWORD" > /tmp/gitea-admin.pw
 chmod 600 /tmp/gitea-admin.pw
 
-uv run vaultwarden-notes seed \
+uv run vaultwarden-notes --password-file /tmp/vw.pw seed \
   --app gitea \
   --namespace gitea \
   --secret-name gitea-admin \
   --secret-key password \
-  --body @/tmp/gitea-admin.pw \
-  --password-file /tmp/vw.pw
+  --body @/tmp/gitea-admin.pw
 ```
 
 The CLI exits with `Secure Note created: id=<uuid> …` on
@@ -239,13 +238,12 @@ resets it:
 echo -n "$NEW_REGISTRATION_TOKEN" > /tmp/runner-token
 chmod 600 /tmp/runner-token
 
-uv run vaultwarden-notes seed \
+uv run vaultwarden-notes --password-file /tmp/vw.pw seed \
   --app gitea-runner \
   --namespace gitea-runner \
   --secret-name gitea-runner-config \
   --secret-key registrationToken \
-  --body @/tmp/runner-token \
-  --password-file /tmp/vw.pw
+  --body @/tmp/runner-token
 ```
 
 The note's name doesn't matter for VKS — VKS reads the

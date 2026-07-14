@@ -88,7 +88,11 @@ The same principle extends to two cross-cutting packages:
   modified stream to stdout. Used to break the
   chart-managed-Secret ↔ VKS-managed-Secret field-manager
   race for `cloudflare-tunnel-remote`. See
-  [`docs/cloudflared-helm-post-renderer.md`](cloudflared-helm-post-renderer.md).
+  [`docs/cloudflared-helm-post-renderer.md`](cloudflared-helm-post-renderer.md)
+  for the post-renderer design; the end-to-end
+  Cloudflare Tunnel story (mint → Vaultwarden → VKS →
+  chart → pod, plus rotation) lives in
+  [`docs/cloudflare-tunnel.md`](cloudflare-tunnel.md).
 
 ### O — Open/Closed
 

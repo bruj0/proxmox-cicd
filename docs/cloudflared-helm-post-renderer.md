@@ -1,5 +1,20 @@
 # Helm ↔ VKS race fix: the post-renderer overlay
 
+> **Scope.** This doc is the design reference for the
+> `--post-renderer` overlay that breaks the helm ↔ VKS
+> field-manager race on the
+> `Secret/cloudflare-tunnel-remote` resource. It is
+> focused on the post-renderer design (symptom, fix,
+> label/annotation contract, tests).
+>
+> For the **end-to-end Cloudflare Tunnel story** —
+> how the tunnel is minted, where its token lives in
+> Vaultwarden, how the chart consumes it, and how to
+> rotate the token — see
+> [cloudflare-tunnel.md](./cloudflare-tunnel.md).
+> That doc is the canonical source; this one is a
+> focused drill-down on the post-renderer.
+
 The `cloudflared` app installs the upstream
 [`cloudflare-tunnel-remote` chart][chart], which renders a
 single Secret (`cloudflare-tunnel-remote`) carrying the
@@ -14,6 +29,7 @@ and the post-renderer overlay that fixes it.
 
 [chart]: https://github.com/cloudflare/helm-charts/releases/tag/cloudflare-tunnel-remote-0.1.2
 [vks]: ./vaultwarden-sync.md
+[cf-tunnel]: ./cloudflare-tunnel.md
 
 ## Symptom
 
@@ -251,6 +267,11 @@ ruff + mypy --strict clean across 27 source files.
 
 ## See also
 
+- [`docs/cloudflare-tunnel.md`](./cloudflare-tunnel.md) —
+  the canonical Cloudflare Tunnel doc. Covers how the
+  tunnel is minted, where the token lives in
+  Vaultwarden, the full secret flow, and rotation
+  procedures (routine + hard).
 - [`docs/vaultwarden-notes.md`](./vaultwarden-notes.md) —
   how the orchestrator seeds the VKS note (the other half
   of the loop).

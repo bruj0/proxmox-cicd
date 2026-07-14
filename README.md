@@ -62,9 +62,10 @@ extension recipe.
 - [docs/PLAN.md](docs/PLAN.md) — the design plan.
 - [docs/architecture.md](docs/architecture.md) — subsystem boundaries.
 - [docs/idempotency.md](docs/idempotency.md) — what `make apply` does on a steady-state cluster.
+- [docs/cloudflare-tunnel.md](docs/cloudflare-tunnel.md) — the canonical Cloudflare Tunnel doc: end-to-end secret flow (mint → Vaultwarden → VKS → chart → pod) plus rotation runbook.
 - [docs/vaultwarden-sync.md](docs/vaultwarden-sync.md) — how VKS consumes Vaultwarden items as k8s Secrets.
 - [docs/vaultwarden-notes.md](docs/vaultwarden-notes.md) — the `vaultwarden-notes` CLI + `VaultwardenClient` library used by the orchestrator.
-- [docs/cloudflared-helm-post-renderer.md](docs/cloudflared-helm-post-renderer.md) — helm ↔ VKS race fix for chart-managed Secrets.
+- [docs/cloudflared-helm-post-renderer.md](docs/cloudflared-helm-post-renderer.md) — focused design reference for the helm ↔ VKS race fix for chart-managed Secrets (the post-renderer overlay).
 - [docs/runbooks/add-an-app.md](docs/runbooks/add-an-app.md) — adding a 4th app to the catalog.
 - [docs/runbooks/destroy-and-recreate.md](docs/runbooks/destroy-and-recreate.md) — fresh-cluster recipe.
 - [docs/runbooks/rotate-gitea-tokens.md](docs/runbooks/rotate-gitea-tokens.md) — rotating the Gitea admin password via Bitwarden.

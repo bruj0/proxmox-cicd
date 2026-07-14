@@ -12,7 +12,10 @@ It powers two consumers:
   `_seed_vaultwarden_note()` calls `VaultwardenClient.login()`
   + `client.create_cipher()` to land the Cloudflare tunnel
   token as a Secure Note so VaultwardenK8sSync (VKS) recreates
-  the chart-managed Secret on destroy + apply.
+  the chart-managed Secret on destroy + apply. The
+  orchestrator flow (mint, persist, seed, rotate, clean up
+  duplicates) is documented end-to-end in
+  [`docs/cloudflare-tunnel.md`](./cloudflare-tunnel.md).
 - **The CLI** (`uv run vaultwarden-notes …`). The same
   library, exposed as a multi-subcommand tool for the
   operator. `seed` lands a new note; `delete` removes one
@@ -80,12 +83,11 @@ The split matches the Bitwarden protocol's natural seams:
 echo -n "$MASTER_PASSWORD" > /tmp/vw.pw
 chmod 600 /tmp/vw.pw
 
-uv run vaultwarden-notes seed \
+uv run vaultwarden-notes --password-file /tmp/vw.pw seed \
   --app cloudflared --namespace cloudflared \
   --secret-name cloudflare-tunnel-remote \
   --secret-key tunnelToken \
-  --body @infra/secrets/cloudflared-tunnel.json \
-  --password-file /tmp/vw.pw
+  --body @infra/secrets/cloudflared-tunnel.json
 ```
 
 Equivalent to a one-off `vaultwarden-notes` invocation.
@@ -95,7 +97,7 @@ The CLI is installed as a console script (`pip install .` /
 ### List every cipher in your vault
 
 ```sh
-uv run vaultwarden-notes list --password-file /tmp/vw.pw
+uv run vaultwarden-notes --password-file /tmp/vw.pw list
 ```
 
 Output is one row per cipher, decrypted name + VKS custom
@@ -110,7 +112,7 @@ id=f47ac10b-...  name=gitea-runner-token  ns=gitea-runner  name=gitea-runner-con
 ### Decrypt one cipher
 
 ```sh
-uv run vaultwarden-notes decrypt --id bd915266-... --password-file /tmp/vw.pw
+uv run vaultwarden-notes --password-file /tmp/vw.pw decrypt --id bd915266-...
 ```
 
 Prints the cipher's decrypted `name`, `notes`, and every
@@ -120,15 +122,22 @@ custom field. Useful for sanity-checking what VKS will sync.
 
 ```sh
 # by id
-uv run vaultwarden-notes delete --id bd915266-... --password-file /tmp/vw.pw
+uv run vaultwarden-notes --password-file /tmp/vw.pw delete --id bd915266-...
 
 # by name (case-insensitive substring)
-uv run vaultwarden-notes delete --match cloudflared --password-file /tmp/vw.pw
+uv run vaultwarden-notes --password-file /tmp/vw.pw delete --match cloudflared
 ```
 
 `--match` is a substring match against the **decrypted**
 cipher name. If multiple match, the CLI prints them and
 asks for confirmation (unless `--yes` is passed).
+
+> **Flag ordering.** `--password-file` (along with
+> `--email`, `--vaultwarden-url`, `--kubeconfig`,
+> `--vks-namespace`, and `--vks-secret-name`) is a
+> **parent-level** flag — it must appear before the
+> subcommand. Putting it after the subcommand fails with
+> `unrecognized arguments: --password-file /tmp/vw.pw`.
 
 ## Quick start (Python)
 
@@ -188,12 +197,12 @@ usage: vaultwarden-notes [-h] [--password-file FILE]
 ### `seed` subcommand
 
 ```
-vaultwarden-notes seed --app APP --namespace NAMESPACE
-                       --secret-name SECRET_NAME
-                       [--secret-key SECRET_KEY]
-                       (--body BODY | --body @FILE)
-                       [--password-file FILE] [--email EMAIL]
-                       [--vaultwarden-url URL] [--dry-run]
+vaultwarden-notes [--password-file FILE …] seed
+                  --app APP --namespace NAMESPACE
+                  --secret-name SECRET_NAME
+                  [--secret-key SECRET_KEY]
+                  (--body BODY | --body @FILE)
+                  [--dry-run]
 ```
 
 The body is the **plaintext payload** that ends up under
@@ -203,8 +212,8 @@ to read from disk.
 ### `delete` subcommand
 
 ```
-vaultwarden-notes delete (--id ID | --match SUBSTRING)
-                        [--yes] [--password-file FILE] …
+vaultwarden-notes [--password-file FILE …] delete
+                  (--id ID | --match SUBSTRING) [--yes]
 ```
 
 Exactly one of `--id` or `--match` is required. `--yes`
@@ -213,8 +222,7 @@ skips the confirmation prompt when multiple ciphers match.
 ### `list` subcommand
 
 ```
-vaultwarden-notes list [--org ORG_ID] [--folder FOLDER_ID]
-                       [--password-file FILE] …
+vaultwarden-notes [--password-file FILE …] list [--org ORG_ID] [--folder FOLDER_ID]
 ```
 
 Prints one line per cipher: `id`, decrypted `name`, and
@@ -224,7 +232,7 @@ when present in the cipher's custom fields.
 ### `decrypt` subcommand
 
 ```
-vaultwarden-notes decrypt --id ID [--field FIELD] [--password-file FILE] …
+vaultwarden-notes [--password-file FILE …] decrypt --id ID [--field FIELD]
 ```
 
 `--field` is one of `name`, `notes`, `username`, `password`,

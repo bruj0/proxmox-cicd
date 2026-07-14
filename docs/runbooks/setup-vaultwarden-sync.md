@@ -305,14 +305,20 @@ terminal:
 # List every cipher VKS will pick up.
 echo -n "$MASTER_PASSWORD" > /tmp/vw.pw
 chmod 600 /tmp/vw.pw
-uv run vaultwarden-notes list --password-file /tmp/vw.pw
+uv run vaultwarden-notes --password-file /tmp/vw.pw list
 
 # Decrypt one cipher (sanity-check the body / custom fields).
-uv run vaultwarden-notes decrypt --id <cipher-id> --password-file /tmp/vw.pw
+uv run vaultwarden-notes --password-file /tmp/vw.pw decrypt --id <cipher-id>
 
 # Delete a cipher by id (clean up smoke-test leftovers).
-uv run vaultwarden-notes delete --id <cipher-id> --password-file /tmp/vw.pw
+uv run vaultwarden-notes --password-file /tmp/vw.pw delete --id <cipher-id>
 ```
+
+`--password-file` is a parent-level flag and must appear
+**before** the subcommand. Putting it after fails with
+`unrecognized arguments`. See
+[`docs/vaultwarden-notes.md`](../vaultwarden-notes.md) for
+the full CLI reference.
 
 For the full CLI reference and the in-process
 `VaultwardenClient` library, see

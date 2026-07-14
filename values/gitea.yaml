@@ -166,9 +166,50 @@ gitea:
     passwordMode: initialOnlyRequireReset
   config:
     server:
-      # ROOT_URL, DOMAIN, SSH_DOMAIN are auto-derived by the
-      # chart from the HTTPRoute's `host:` field at apply time.
+      # The chart's `gitea.inline_configuration.defaults.server`
+      # helper auto-derives ROOT_URL / DOMAIN / SSH_DOMAIN, but
+      # ONLY when `ingress.enabled=true` (it reads
+      # `.Values.ingress.hosts[0].host`) or
+      # `route.enabled=true`. We use neither — our own Gateway
+      # API HTTPRoute fronts the Service (see
+      # apps/gitea.py::GATEWAY_MANIFEST), so the chart's
+      # fallback is `http://<release>-http.<ns>.svc.cluster.local`
+      # and the rendered app.ini shows
+      # `ROOT_URL = http://git.example.com/`, which trips the
+      # "Your ROOT_URL in app.ini is unlikely matching the site
+      # you are visiting" warning at every boot.
+      #
+      # We therefore set the three fields explicitly with
+      # a $PUBLIC_HOST sentinel that the gitea orchestrator
+      # substitutes at apply-time from
+      # `catalog.ingress.base_domain`. The public-facing
+      # ROOT_URL scheme is https (because the Gateway
+      # terminates TLS upstream), but PROTOCOL stays
+      # `http` — the in-pod listener serves plain HTTP and
+      # the chart's TLS certs are NOT mounted inside the
+      # pod. Setting PROTOCOL=https here would make Gitea
+      # try to bind HTTPS on :3000 and fail with
+      # "Failed to load https cert file" because there is
+      # no CERT_FILE/KEY_FILE in /data. ROOT_URL (what the
+      # browser sees, used for OAuth/email/webhook links)
+      # and PROTOCOL (what the in-pod listener speaks) are
+      # deliberately decoupled.
+      # Re-running `cicdctl apply cicd` after editing the
+      # catalog regenerates the rendered-values file and
+      # upgrades the chart in place.
+      ROOT_URL: "https://$PUBLIC_HOST/"
+      DOMAIN: "$PUBLIC_HOST"
+      SSH_DOMAIN: "$PUBLIC_HOST"
+      PROTOCOL: "http"
       ENABLE_PPROF: false
+    service:
+      # Disable open self-registration. The instance is
+      # internal (private SSO via reverse proxy or manual
+      # user creation in the admin UI). Without this, the
+      # /user/sign_up page is reachable and anyone can
+      # create an account.
+      DISABLE_REGISTRATION: true
+      ALLOW_ONLY_EXTERNAL_REGISTRATION: false
   # Probes — use the documented /api/healthz endpoint
   # (https://docs.gitea.com/installation/install-on-kubernetes).
   livenessProbe:

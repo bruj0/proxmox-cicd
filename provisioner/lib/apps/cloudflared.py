@@ -972,6 +972,47 @@ class CloudflaredApp:
                 ),
                 user_key=client.user_key,
             )
+            # Idempotency guard: VKS uses the
+            # ``namespaces``/``secret-name``/``secret-key``
+            # triple as the Secret primary key, so VKS will
+            # happily serve the existing Secret from any one
+            # of N ciphers sharing the same triple. But the
+            # orchestrator's job is to leave ONE canonical
+            # cipher per (app, namespace, secret) — anything
+            # else is noise that drifts in subsequent
+            # web-UI edits. The 2026-07-14 vault audit found
+            # 4 cloudflared ciphers from back-to-back
+            # ``cicdctl apply cicd`` runs because this guard
+            # was missing. List first, skip the POST when a
+            # cipher with the same triple is already present.
+            existing = client.list_ciphers()
+            already_seeded = False
+            for c in existing:
+                triple: dict[str, str] = {}
+                fields = c.get("fields") or []
+                for i in range(len(fields)):
+                    try:
+                        k = client.decrypt_cipher_field_name(c, index=i)
+                        triple[k] = client.decrypt_cipher_field(c, name=k)
+                    except Exception:
+                        continue
+                if (
+                    triple.get("namespaces") == VWS_NOTE_NAMESPACE
+                    and triple.get("secret-name") == VWS_NOTE_SECRET_NAME
+                    and triple.get("secret-key") == VWS_NOTE_SECRET_KEY
+                ):
+                    already_seeded = True
+                    break
+            if already_seeded:
+                ctx.logger.info(
+                    "cloudflared.vws_seed_skipped",
+                    app=VWS_NOTE_APP,
+                    namespace=VWS_NOTE_NAMESPACE,
+                    secret_name=VWS_NOTE_SECRET_NAME,
+                    secret_key=VWS_NOTE_SECRET_KEY,
+                    reason="cipher with matching VKS triple already exists",
+                )
+                return
             client.create_cipher(payload)
         except Exception as e:
             ctx.logger.warn(

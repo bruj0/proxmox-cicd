@@ -126,7 +126,22 @@ def test_gitea_plan_returns_helm_install_and_httproute(tmp_path: Path) -> None:
 def test_gitea_apply_runs_helm_then_kubectl(tmp_path: Path) -> None:
     repo = tmp_path
     (repo / "values").mkdir(parents=True)
-    (repo / "values" / "gitea.yaml").write_text("# placeholder\n")
+    # Commit-style values file with the same `$PUBLIC_HOST` /
+    # `$PROTOCOL` sentinels the real `values/gitea.yaml`
+    # carries. The apply step must rewrite these into the
+    # rendered sibling before passing it to helm — that's
+    # the whole point of the rendered-values convention.
+    (repo / "values" / "gitea.yaml").write_text(
+        "gitea:\n"
+        "  config:\n"
+        "    server:\n"
+        "      ROOT_URL: 'https://$PUBLIC_HOST/'\n"
+        "      DOMAIN: '$PUBLIC_HOST'\n"
+        "      SSH_DOMAIN: '$PUBLIC_HOST'\n"
+        "      PROTOCOL: '$PROTOCOL'\n"
+        "    service:\n"
+        "      DISABLE_REGISTRATION: true\n"
+    )
     # Lay down a kubeconfig the loader can parse. The gitea
     # app reads it from <proxmox_k3s_repo>/infra/clusters/cicd/
     # so we put it there.
@@ -158,12 +173,31 @@ def test_gitea_apply_runs_helm_then_kubectl(tmp_path: Path) -> None:
     assert kwargs["chart"].startswith("oci://")
     assert kwargs["namespace"] == "gitea"
     assert kwargs["version"] == CHART_VERSION
-    assert kwargs["values_files"][0].name == "gitea.yaml"
+    # Apply renders the orchestrator-injected hostname into a
+    # sibling `gitea.values-rendered.yaml` (the committed
+    # `gitea.yaml` carries `$PUBLIC_HOST`/`$PROTOCOL`
+    # sentinels). Helm must consume the rendered file, not
+    # the committed defaults — see GiteaApp.apply docstring.
+    assert kwargs["values_files"][0].name == "gitea.values-rendered.yaml"
 
     # 2. The kubectl.apply call also went through.
     assert fake_run.call_count == 2
 
-    # 3. The result has the right metadata.
+    # 3. The rendered sibling actually exists on disk, with
+    #    the sentinels substituted. This is what would
+    #    otherwise regress to "Your ROOT_URL in app.ini is
+    #    unlikely matching the site you are visiting" at
+    #    every Gitea boot — the symptom that motivated the
+    #    rendered-values convention.
+    rendered = repo / "values" / "gitea.values-rendered.yaml"
+    assert rendered.exists()
+    text = rendered.read_text()
+    assert "$PUBLIC_HOST" not in text
+    assert "$PROTOCOL" not in text
+    assert "gitea.example.net" in text
+    assert "https" in text
+
+    # 4. The result has the right metadata.
     assert isinstance(result, AppApplyResult)
     assert result.app_name == "gitea"
     assert result.namespace == "gitea"

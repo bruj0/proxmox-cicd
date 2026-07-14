@@ -319,3 +319,167 @@ def test_apply_raises_when_hostname_does_not_match_zone(tmp_path: Path) -> None:
         assert "does not match" in str(ei.value)
     assert not mock_urlopen.called
     assert not ctx.helm.install_or_upgrade.called
+
+
+# ----- vaultwarden note idempotency -----
+
+class _StubVaultClient:
+    """Stand-in for ``VaultwardenClient`` so the seed
+    helper's library calls can be asserted without
+    performing real crypto or HTTP. Records every
+    method call for the test to inspect."""
+
+    def __init__(self, ciphers: list[dict] | None = None) -> None:
+        self.ciphers = ciphers if ciphers is not None else []
+        self.created: list[dict] = []
+        self.list_calls = 0
+        # ``build_secure_note_payload`` reads this; a
+        # random 64-byte key is fine — the stub never
+        # tries to encrypt with it.
+        self.user_key = b"\x00" * 64
+
+    def login(self, **_kwargs: object) -> _StubVaultClient:
+        return self
+
+    def list_ciphers(self) -> list[dict]:
+        self.list_calls += 1
+        return list(self.ciphers)
+
+    def decrypt_cipher_field_name(self, cipher: dict, *, index: int) -> str:
+        # Each field's "name" is a dict like {"plain": "namespaces"}.
+        # The real client decrypts; the stub just returns the tag.
+        return cipher["fields"][index]["name_plain"]
+
+    def decrypt_cipher_field(self, cipher: dict, *, name: str) -> str:
+        for f in cipher["fields"]:
+            if f["name_plain"] == name:
+                return f["value_plain"]
+        raise KeyError(name)
+
+    def create_cipher(self, payload: dict) -> dict:
+        self.created.append(payload)
+        return {"id": "new-id", **payload}
+
+
+def _cipher_with_triple(
+    namespaces: str,
+    secret_name: str,
+    secret_key: str,
+    body: str = "{}",
+) -> dict:
+    return {
+        "id": f"existing-{secret_name}",
+        "type": 2,
+        "fields": [
+            {"name_plain": "namespaces",  "value_plain": namespaces},
+            {"name_plain": "secret-name", "value_plain": secret_name},
+            {"name_plain": "secret-key",  "value_plain": secret_key},
+        ],
+        "notes": body,
+    }
+
+
+def test_vws_seed_skipped_when_triple_already_exists(tmp_path: Path) -> None:
+    """The 2026-07-14 vault audit found 4 duplicate
+    ``cloudflared k8s secret value`` entries from back-
+    to-back ``cicdctl apply cicd`` runs because the
+    orchestrator created a new cipher on every run
+    instead of guarding with ``list_ciphers``. Pin the
+    new behaviour: when a cipher with the same VKS
+    triple exists, ``create_cipher`` must NOT be
+    called.
+    """
+    import unittest.mock as _um
+    from provisioner.lib.vaultwarden import VaultwardenClient as RealClient
+
+    ctx = _build_ctx(tmp_path)
+    # Use a temp password file INSIDE tmp_path, NOT the
+    # shared ``/tmp/vw.pw`` — the orchestrator reads
+    # that exact path, so a test that writes to it would
+    # silently corrupt the operator's live password.
+    # We monkey-patch the helper's lookup below.
+    fake_pw = tmp_path / "vw.pw"
+    fake_pw.write_text("master-password\n")
+    fake_pw.chmod(0o600)
+
+    stub = _StubVaultClient(ciphers=[
+        _cipher_with_triple("cloudflared", "cloudflare-tunnel-remote", "tunnelToken"),
+    ])
+    # The orchestrator runs `kubectl ... get secret ... -o
+    # jsonpath={.data.BW_CLIENTID}` and the same for
+    # BW_CLIENTSECRET. Two subprocess calls, both must
+    # return valid base64 stdout.
+    b64_id = base64.b64encode(b"fake-client-id").decode()
+    b64_sec = base64.b64encode(b"fake-client-secret").decode()
+    subproc_results = [
+        MagicMock(returncode=0, stdout=b64_id + "\n", stderr=""),
+        MagicMock(returncode=0, stdout=b64_sec + "\n", stderr=""),
+    ]
+
+    def fake_subproc(*args, **kwargs):
+        if subproc_results:
+            return subproc_results.pop(0)
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with _um.patch.object(RealClient, "login", classmethod(lambda cls, **kw: stub)), \
+         _um.patch.object(RealClient, "list_ciphers", stub.list_ciphers), \
+         _um.patch.object(RealClient, "decrypt_cipher_field_name", stub.decrypt_cipher_field_name), \
+         _um.patch.object(RealClient, "decrypt_cipher_field", stub.decrypt_cipher_field), \
+         _um.patch.object(RealClient, "create_cipher", stub.create_cipher), \
+         _um.patch("subprocess.run", side_effect=fake_subproc), \
+         _um.patch(
+             "provisioner.lib.apps.cloudflared.Path",
+             lambda *a, **kw: fake_pw if a and str(a[0]) == "/tmp/vw.pw" else Path(*a, **kw),
+         ):
+        # Call the private seed helper directly.
+        CloudflaredApp()._seed_vaultwarden_note(ctx, TUNNEL_TOKEN_PLAINTEXT)
+
+    # No new ciphers should have been created.
+    assert stub.created == []
+    # list_ciphers must have been called (the guard).
+    assert stub.list_calls >= 1
+
+
+def test_vws_seed_creates_when_no_matching_triple(tmp_path: Path) -> None:
+    """If no existing cipher has the same VKS triple,
+    the helper must POST a new cipher (preserve the
+    original seed-from-scratch behaviour for the
+    first-ever apply)."""
+    import unittest.mock as _um
+    from provisioner.lib.vaultwarden import VaultwardenClient as RealClient
+
+    ctx = _build_ctx(tmp_path)
+    fake_pw = tmp_path / "vw.pw"
+    fake_pw.write_text("master-password\n")
+    fake_pw.chmod(0o600)
+
+    # Empty vault → no matching triple.
+    stub = _StubVaultClient(ciphers=[
+        _cipher_with_triple("default", "some-other-secret", "password"),  # unrelated
+    ])
+    b64_id = base64.b64encode(b"fake-client-id").decode()
+    b64_sec = base64.b64encode(b"fake-client-secret").decode()
+    subproc_results = [
+        MagicMock(returncode=0, stdout=b64_id + "\n", stderr=""),
+        MagicMock(returncode=0, stdout=b64_sec + "\n", stderr=""),
+    ]
+
+    def fake_subproc(*args, **kwargs):
+        if subproc_results:
+            return subproc_results.pop(0)
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    with _um.patch.object(RealClient, "login", classmethod(lambda cls, **kw: stub)), \
+         _um.patch.object(RealClient, "list_ciphers", stub.list_ciphers), \
+         _um.patch.object(RealClient, "decrypt_cipher_field_name", stub.decrypt_cipher_field_name), \
+         _um.patch.object(RealClient, "decrypt_cipher_field", stub.decrypt_cipher_field), \
+         _um.patch.object(RealClient, "create_cipher", stub.create_cipher), \
+         _um.patch("subprocess.run", side_effect=fake_subproc), \
+         _um.patch(
+             "provisioner.lib.apps.cloudflared.Path",
+             lambda *a, **kw: fake_pw if a and str(a[0]) == "/tmp/vw.pw" else Path(*a, **kw),
+         ):
+        CloudflaredApp()._seed_vaultwarden_note(ctx, TUNNEL_TOKEN_PLAINTEXT)
+
+    assert len(stub.created) == 1
+    assert stub.list_calls >= 1

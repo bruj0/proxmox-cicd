@@ -170,8 +170,18 @@ def http_get_json(
     opener: urllib.request.OpenerDirector,
     url: str,
     access_token: str,
-) -> dict[str, Any]:
-    """GET with Bearer auth → JSON dict."""
+) -> Any:
+    """GET with Bearer auth → parsed JSON (dict OR list).
+
+    The return type is intentionally widened from the
+    earlier ``dict[str, Any]`` because the
+    ``/api/ciphers`` endpoint returns either a bare JSON
+    list (older Vaultwarden) or a paginated envelope dict
+    (Vaultwarden 1.34.0+ / Bitwarden cloud). Callers that
+    know the expected shape validate it themselves — see
+    ``VaultwardenClient.list_ciphers`` for the canonical
+    pattern.
+    """
     req = urllib.request.Request(
         url,
         method="GET",
@@ -179,7 +189,7 @@ def http_get_json(
     )
     body = _open(opener, req)
     try:
-        return cast(dict[str, Any], json.loads(body))
+        return json.loads(body)
     except json.JSONDecodeError as exc:
         raise RuntimeError(
             f"non-JSON response from {url}: {body[:500]}"
