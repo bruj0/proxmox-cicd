@@ -8,11 +8,16 @@ license = { text = "MIT" }
 authors = [{ name = "proxmox-cicd" }]
 dependencies = [
     "cryptography>=49.0.0",
+    "pyyaml>=6.0.1,<7.0",
 ]
 
-# No runtime third-party dependencies. The provisioner uses only
-# the Python stdlib (subprocess for helm/kubectl, json for the
-# apps.json handoff, dataclasses for state, pathlib for IO).
+# Runtime deps:
+# - cryptography: Vaultwarden PBKDF2/HKDF/AES/HMAC primitives
+#   (lib/vaultwarden/crypto.py).
+# - pyyaml: the helm-chart post-renderer reads/writes the chart's
+#   rendered manifest stream (lib/helm_post_renderers/*.py).
+# Everything else is stdlib: subprocess for helm/kubectl, json
+# for the apps.json handoff, dataclasses for state, pathlib for IO.
 # Runtime deps for the apps we install are pinned in versions.yaml.
 
 [project.scripts]
@@ -55,4 +60,5 @@ dev = [
     "mypy>=2.3.0",
     "pytest>=9.1.1",
     "ruff>=0.15.21",
+    "types-PyYAML>=6.0.12,<7.0",
 ]

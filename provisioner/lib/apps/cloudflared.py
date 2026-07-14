@@ -1007,7 +1007,10 @@ class CloudflaredApp:
                 f"-n {NAMESPACE} --create-namespace "
                 f"--set cloudflare.tunnel_token=$TUNNEL_TOKEN "
                 f"--set image.tag={APP_VERSION} "
-                f"--set replicaCount=1",
+                f"--set replicaCount=1 "
+                f"--post-renderer "
+                f"provisioner/lib/helm_post_renderers/"
+                f"strip_helm_secret_labels.py",
             ],
             would_apply=[
                 f"Cloudflare Tunnel {TUNNEL_NAME} "
@@ -1192,24 +1195,28 @@ class CloudflaredApp:
         )
         os.chmod(rendered_values, 0o600)
 
+        # Strip helm-emitted labels from the chart's Secret
+        # via a post-renderer so VaultwardenK8sSync (VKS)
+        # can own it without a kubectl field-manager
+        # conflict. helm still owns the Deployment +
+        # ServiceAccount (those pass through the
+        # post-renderer untouched). The post-renderer is
+        # a tiny stdlib + pyyaml script that reads the
+        # rendered manifest on stdin and writes it to
+        # stdout; helm pipes its output through it. See
+        # `helm_post_renderers/strip_helm_secret_labels.py`
+        # for the matching logic and the rationale.
+        from ..helm_post_renderers.strip_helm_secret_labels import (
+            SCRIPT_PATH as SECRET_POST_RENDERER,
+        )
+
         result = ctx.helm.install_or_upgrade(
             release=HELM_RELEASE_NAME,
             chart=str(chart_path),
             namespace=NAMESPACE,
             version=CHART_VERSION,
             values_files=(rendered_values,),
-            extra_args=(
-                # VaultwardenK8sSync pre-creates the chart's
-                # Secret on the first apply (it's the same
-                # Secret whose key the orchestrator's note
-                # describes: cloudflare-tunnel-remote /
-                # tunnelToken). On the first helm upgrade,
-                # the chart refuses to adopt a Secret that's
-                # owned by another tool. --take-ownership
-                # lets helm add its annotations and labels
-                # and treat the Secret as its own.
-                "--take-ownership",
-            ),
+            extra_args=("--post-renderer", str(SECRET_POST_RENDERER)),
             timeout_s=180.0,
         )
         if result.returncode != 0:
