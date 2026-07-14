@@ -28,17 +28,16 @@ What this app does on apply (idempotent, replay-safe):
      named `cicd-tunnel` exists on the account
      (`config_src=cloudflare`, POST
      /accounts/:id/cfd_tunnel if absent). Captures the
-     tunnel UUID and the JSON `TunnelSecret` blob.
-  4. Fetches the **tunnel credentials blob** via
+     tunnel UUID and the `TunnelSecret` blob.
+  4. Fetches the **tunnel token** via
      `GET /accounts/:acc/cfd_tunnel/:tun/token`. The
-     body is a base64-encoded compact-JSON document
-     `{"a": "<accountTag>", "t": "<tunnelUUID>",
-     "s": "<tunnelSecret>"}` — this is the upstream
-     "credentials file" content, not a JWT triple.
-     Persists it to
-     `infra/secrets/cloudflared-tunnel.json["tunnel_token"]`
-     (mode 0600, gitignored). See **Known issue**
-     below re: how cloudflared 2024.8.3 consumes this.
+     body is a base64 string — the only authentication
+     artifact a remotely-managed tunnel needs. It
+     decodes to `{"a": "<accountTag>", "t": "<tunnelUUID>",
+     "s": "<tunnelSecret>"}` (compact JSON). Persists it
+     to `infra/secrets/cloudflared-tunnel.json["tunnel_token"]`
+     (mode 0600, gitignored). See "Remote-tunnel
+     authentication" below.
   5. Pushes a **remote ingress rule** to Cloudflare:
      `PUT /accounts/:acc/cfd_tunnel/:tun/configurations`
      with a single rule that fans `<hostname> -> http://
@@ -46,8 +45,8 @@ What this app does on apply (idempotent, replay-safe):
      The remotely-managed chart pulls this config down
      on each connection (no local `config.yaml` mount,
      no `cert.pem` needed).
-  6. Seeds the JWT into Vaultwarden as a Secure Note
-     `(app=cloudflared, namespace=cloudflared,
+  6. Seeds the tunnel token into Vaultwarden as a Secure
+     Note `(app=cloudflared, namespace=cloudflared,
      secret-name=cloudflare-tunnel-remote,
      secret-key=tunnelToken)` so VaultwardenK8sSync
      recreates the chart-managed Secret if helm ever
@@ -55,11 +54,13 @@ What this app does on apply (idempotent, replay-safe):
   7. Installs the upstream
      `cloudflare-tunnel-remote-0.1.2` chart into the
      cluster (`replicaCount=1`, `image.tag=2024.8.3`,
-     `cloudflare.tunnel_token=<base64-credentials-json>`).
+     `cloudflare.tunnel_token=<base64-token-string>`).
      The chart creates
      Secret/cloudflare-tunnel-remote with key
      `tunnelToken`, the Deployment mounts it as
-     `$TUNNEL_TOKEN`. See **Known issue** below.
+     `$TUNNEL_TOKEN`. cloudflared 2024.8.3 uses that
+     value verbatim — no cert.pem, no JWT, no extra
+     decoding.
   8. Ensures a proxied CNAME record on the zone:
      `<hostname> -> <tunnel-uuid>.cfargotunnel.com`
      (orange-clouded). The hostname defaults to
@@ -78,48 +79,66 @@ Security model:
     used only to mint the scoped token. After the mint,
     it is never written to disk and never used again
     by this app.
-  - The scoped token + the tunnel secret + the
-    credentials blob are the only credentials persisted
+  - The scoped token + the tunnel token + the
+    tunnel credentials are the only credentials persisted
     on disk; all three live under `infra/secrets/`
     (mode 0600, gitignored).
   - The scoped token can be revoked at any time via
     `DELETE /user/tokens/<id>`. The next apply would
     re-mint a new one automatically.
 
-Known issue (open as of 2026-07-14):
-  The chart's Secret/cloudflare-tunnel-remote/
-  `tunnelToken` key holds the **base64-encoded
-  credentials-JSON document** fetched in step 4, NOT a
-  true JWT triple. Today the chart Deployment surfaces
-  it as `$TUNNEL_TOKEN`, and cloudflared 2024.8.3
-  rejects it with:
-      Provided Tunnel token is not valid.
-      See 'cloudflared tunnel run --help'.
-  Verified by spinning up a one-shot pod with the
-  exact same image and env var; same error, no chart
-  involvement. So this is **not** a chart problem
-  — it's a runtime fact about how 2024.8.3 parses
-  $TUNNEL_TOKEN.
-  Workarounds to try (not implemented in this
-  revision):
-    a. Replace the chart's `tunnel_token`-as-env
-       with `--credentials-file
-       /etc/cloudflared/<UUID>.json` mounted from a
-       Secret holding the JSON. cloudflared then
-       reads the JSON natively.
-    b. Bump APP_VERSION to a newer image (e.g.
-       2026.7.1) which may accept the credentials
-       blob in $TUNNEL_TOKEN.
-    c. Mint a true JWT via `cloudflared tunnel
-       token <name>` from a host that has the
-       account cert.pem — the only API path that
-       issues the a.b.c triple.
-  Until one of the above lands, step 5–7 succeed
-  (chart installs, Secret populated, ingress rule
-  pushed, DNS CNAME live, VWS note seeded) but
-  gitea.bruj0.net returns HTTP 530 — the *pod*
-  cannot dial Cloudflare. Step 4 (the API fetch) is
-  itself correct and idempotent.
+Remote-tunnel authentication (the only auth a
+remotely-managed tunnel needs):
+
+  Cloudflare's "tunnel token" is what cloudflared
+  passes via `--token <TUNNEL_TOKEN>` (or the
+  `TUNNEL_TOKEN` env var). For a remotely-managed
+  tunnel (`config_src=cloudflare`, the only kind the
+  chart supports), this token is **a single opaque
+  base64 string** — NOT a JWT triple, NOT cert.pem,
+  NOT `~/.cloudflared/<UUID>.json` host state. It is
+  obtained via one of these two API endpoints, both
+  of which return the same value:
+
+    POST /accounts/:id/cfd_tunnel
+      body: `{"name": "...", "config_src": "cloudflare"}`
+      result.token: base64 string (240 chars on
+        standard tunnels). The freshly-minted tunnel's
+        bearer token.
+
+    GET  /accounts/:id/cfd_tunnel/:tun/token
+      result: same base64 string. Re-fetchable for
+        any existing tunnel the API token can see.
+
+  Decoding the base64 yields compact JSON:
+    {"a": "<accountTag>", "t": "<tunnelUUID>",
+     "s": "<tunnelSecret>"}
+  This is informational only — cloudflared consumes
+  the base64 string verbatim. There is no JWT triple,
+  no certificate path, no local CLI step.
+
+  Sources:
+    - API docs:
+      https://developers.cloudflare.com/api/resources/\
+zero_trust/subresources/tunnels/subresources/\
+cloudflared/subresources/token/methods/get/
+    - cloudflared run parameters (TUNNEL_TOKEN is
+      documented as for remotely-managed tunnels only):
+      https://developers.cloudflare.com/cloudflare-one/\
+connections/connect-networks/configure-tunnels/\
+run-parameters/
+    - Created via:
+      https://developers.cloudflare.com/cloudflare-one/\
+networks/connectors/cloudflare-tunnel/get-started/\
+create-remote-tunnel-api/
+
+  The orchestrator persists this token in
+  `infra/secrets/cloudflared-tunnel.json` (mode 0600)
+  under key `tunnel_token`, and renders it into the
+  helm values file under
+  `cloudflare.tunnel_token: '<base64>'`. The chart
+  passes it through to cloudflared 2024.8.3 as
+  `TUNNEL_TOKEN`; no further transformation.
 """
 
 from __future__ import annotations
@@ -139,6 +158,12 @@ from typing import Any
 
 from ..container import Container
 from . import AppApplyResult, AppPlanResult, AppStatus, register
+from .cloudflared_tunnel import (
+    CloudflaredTunnelClient,
+    TunnelRecord,
+    looks_like_tunnel_token,
+    persist as persist_tunnel,
+)
 
 # Chart constants. Pinned to chart 0.1.2 + appVersion 2024.8.3.
 CHART_TGZ = Path("infra/helm-charts/cloudflare-tunnel-remote-0.1.2.tgz")
@@ -154,7 +179,7 @@ HELM_RELEASE_NAME = "cloudflare-tunnel-remote"
 TUNNEL_NAME = "cicd-tunnel"
 
 # Where the scoped API token, tunnel credentials, and
-# JWT tunnel token live on the operator's host. Mode
+# tunnel token live on the operator's host. Mode
 # 0600; gitignored.
 HOST_TOKEN_FILE = Path("infra/secrets/cloudflared-api-token.json")
 HOST_TUNNEL_FILE = Path("infra/secrets/cloudflared-tunnel.json")
@@ -192,6 +217,7 @@ VWS_NOTE_NAMESPACE = "cloudflared"
 VWS_NOTE_SECRET_NAME = "cloudflare-tunnel-remote"
 VWS_NOTE_SECRET_KEY = "tunnelToken"
 
+
 # Default Gateway we forward to. The cluster already
 # has `gitea/gitea` provisioned at apply time.
 DEFAULT_GATEWAY_NAMESPACE = "gitea"
@@ -203,17 +229,6 @@ _CF_API_TIMEOUT_S = 30.0
 # Operator-scoped values (mode 0600). Used in `apply` to
 # mint the scoped API token on first run only.
 _MIN_TOKEN_LIFETIME_S = 24 * 3600
-
-
-def _looks_like_jwt(value: str) -> bool:
-    """True if `value` has the JWT shape (3 base64 chunks
-    joined by dots). Used to deduplicate the
-    credentials-vs-JWT call to Cloudflare's /token endpoint.
-    """
-    if not isinstance(value, str):
-        return False
-    parts = value.split(".")
-    return len(parts) == 3 and all(p for p in parts)
 
 
 @dataclass
@@ -511,43 +526,7 @@ class CloudflaredApp:
         )
         return minted
 
-    # ---------- tunnel + JWT provisioning ----------
-
-    def _list_tunnels(
-        self,
-        account_id: str,
-        token_value: str,
-    ) -> list[dict[str, Any]]:
-        result = self._cf_request(
-            "GET",
-            f"/accounts/{account_id}/cfd_tunnel",
-            token_value=token_value,
-            query={"name": TUNNEL_NAME, "is_deleted": "false"},
-        )
-        if isinstance(result, list):
-            return list(result)
-        tunnels = result.get("tunnels", [])
-        return list(tunnels) if isinstance(tunnels, list) else []
-
-    def _create_tunnel(
-        self,
-        account_id: str,
-        token_value: str,
-    ) -> dict[str, Any]:
-        """POST /accounts/:id/cfd_tunnel. Returns the tunnel
-        dict including `id` (UUID), `name`, and the embedded
-        `credentials_file` blob.
-        """
-        body = {
-            "name": TUNNEL_NAME,
-            "config_src": "cloudflare",
-        }
-        return self._cf_request(
-            "POST",
-            f"/accounts/{account_id}/cfd_tunnel",
-            token_value=token_value,
-            body=body,
-        )
+    # ---------- tunnel + tunnel-token provisioning ----------
 
     def _ensure_tunnel(
         self,
@@ -555,130 +534,161 @@ class CloudflaredApp:
         account_id: str,
         token_value: str,
     ) -> dict[str, Any]:
-        """Look up the tunnel by name; if missing, create it
-        (remotely-managed: config_src=cloudflare). Returns the
-        tunnel record with `id` populated, the credentials
-        blob hydrated, AND the JWT tunnel token attached.
-        Persists the full record to
-        `infra/secrets/cloudflared-tunnel.json` for the helm
-        step + operator audit.
+        """Ensure the named remotely-managed tunnel exists
+        on the Cloudflare account and a fresh tunnel
+        token is cached. Persists a TunnelRecord to
+        `infra/secrets/cloudflared-tunnel.json` (mode
+        0600).
+
+        Lifecycle owned by `CloudflaredTunnelClient`:
+
+          - mint   — POST /accounts/:id/cfd_tunnel with
+                     `{"name": TUNNEL_NAME,
+                       "config_src": "cloudflare"}`,
+                     returns `result.token` (base64
+                     string cloudflared accepts as
+                     `$TUNNEL_TOKEN`).
+          - list_by_name — GET .../cfd_tunnel?name=...
+                     to detect an existing tunnel under
+                     the same name without forging one.
+          - delete — DELETE the tunnel (rotate path).
+          - rotate — delete + mint under the same name.
+
+        Orchestrator-owned decision tree:
+
+          1. If a cached tunnel record exists on disk
+             AND Cloudflare still lists the same tunnel
+             under `TUNNEL_NAME` → reuse (idempotent
+             re-run path, no API mutation).
+          2. Else if Cloudflare has a tunnel under
+             `TUNNEL_NAME` but no cached record (or the
+             cached one was hand-edited) → rotate
+             (delete + remint, idempotent because the
+             name is what we restore).
+          3. Else → mint fresh.
+
+        Returns a dict with `id`, `name`, `tunnel_token`
+        (the base64 string), `credentials_file` so the
+        rest of the orchestrator keeps its existing
+        field contracts.
         """
-        existing = self._list_tunnels(account_id, token_value)
-        if existing:
-            tunnel = existing[0]
-            ctx.logger.info(
-                "cloudflared.tunnel_exists",
-                name=TUNNEL_NAME,
-                id=tunnel["id"],
-            )
-        else:
-            ctx.logger.info(
-                "cloudflared.creating_tunnel",
-                name=TUNNEL_NAME,
-                account_id=account_id,
-            )
-            tunnel = self._create_tunnel(account_id, token_value)
-            ctx.logger.info(
-                "cloudflared.tunnel_created",
-                name=TUNNEL_NAME,
-                id=tunnel.get("id"),
-            )
+        client = CloudflaredTunnelClient(token_value=token_value)
+        cached = self._load_cached_tunnel(ctx)
 
-        if "credentials_file" not in tunnel:
-            # The POST response includes the full credentials
-            # blob; if we got the tunnel from a GET, we need
-            # to fetch it from `token` (compact JSON).
-            #
-            # NOTE: Cloudflare's /token endpoint sometimes
-            # returns a JWT-shaped payload (3 base64 chunks
-            # joined by dots), sometimes the compact JSON
-            # credentials. We detect by trying JSON.parse
-            # first; if it works we treat it as credentials.
-            # If it doesn't, the value is the JWT and we
-            # carry on (the token is also stored in
-            # `tunnel_token` below).
-            cred_b64 = self._cf_request(
-                "GET",
-                f"/accounts/{account_id}/cfd_tunnel/{tunnel['id']}/token",
-                token_value=token_value,
-            )
-            if not isinstance(cred_b64, str):
-                # Some API versions return the credentials
-                # directly as a dict.
-                if isinstance(cred_b64, dict):
-                    tunnel["credentials_file"] = cred_b64.get(
-                        "credentials_file", cred_b64
-                    )
-                else:
-                    raise RuntimeError(
-                        f"GET /cfd_tunnel/{tunnel['id']}/token "
-                        f"returned non-string: {cred_b64!r}"
-                    )
-            else:
-                compact = base64.b64decode(cred_b64).decode("utf-8")
-                try:
-                    compact_obj = json.loads(compact)
-                    if isinstance(compact_obj, dict):
-                        tunnel["credentials_file"] = {
-                            "AccountTag": compact_obj.get("a", account_id),
-                            "TunnelSecret": compact_obj.get("s", ""),
-                            "TunnelID": compact_obj.get("t", tunnel["id"]),
-                        }
-                        decoded_jwt = compact
-                    else:
-                        decoded_jwt = compact
-                except (json.JSONDecodeError, ValueError):
-                    decoded_jwt = compact
-                # Stash the JWT even on the credentials path
-                # (best-effort; we never *depend* on it being
-                # valid in this branch — the explicit JWT
-                # fetch below re-checks).
-                if "tunnel_token" not in tunnel:
-                    tunnel["tunnel_token"] = decoded_jwt
-
-        tunnel_id = tunnel["id"]
-        # Fetch the JWT tunnel token (the bearer-token-shaped
-        # string cloudflared accepts via `--token` /
-        # `$TUNNEL_TOKEN`). If we already populated
-        # `tunnel_token` above and it's a JWT-shape (3
-        # base64 chunks joined by dots), skip the extra call.
-        if not _looks_like_jwt(tunnel.get("tunnel_token", "")):
-            jwt_b64 = self._cf_request(
-                "GET",
-                f"/accounts/{account_id}/cfd_tunnel/{tunnel_id}/token",
-                token_value=token_value,
-            )
-            if isinstance(jwt_b64, dict):
-                # Some API versions wrap in a dict; the only
-                # useful key is `token`. Everything else is
-                # not a JWT.
-                jwt_b64 = str(jwt_b64.get("token", ""))
-            if not isinstance(jwt_b64, str):
-                raise RuntimeError(
-                    "Cloudflare /token returned non-string: "
-                    f"{jwt_b64!r}"
+        record: TunnelRecord | None = None
+        if cached and cached.get("tunnel_token"):
+            # Validate the cached token shape. If it's
+            # not actually a base64 compact-JSON blob
+            # (e.g. an older revision persisted the
+            # decoded JSON instead), don't reuse it —
+            # fall through to the rotate path so
+            # cloudflared never sees a stale or
+            # corrupted bearer string.
+            cached_token = cached.get("tunnel_token", "")
+            if not looks_like_tunnel_token(cached_token):
+                ctx.logger.warning(
+                    "cloudflared.cached_tunnel_token_invalid",
+                    name=TUNNEL_NAME,
+                    cached_id=cached.get("id"),
+                    reason=(
+                        "tunnel_token is not a base64 "
+                        "compact-JSON blob; rotating"
+                    ),
                 )
-            try:
-                jwt = base64.b64decode(jwt_b64).decode("utf-8")
-            except (ValueError, UnicodeDecodeError) as e:
-                raise RuntimeError(
-                    f"Cloudflare /token response is not a "
-                    f"base64-decodable JWT: {e}"
-                ) from e
-            tunnel["tunnel_token"] = jwt
+            else:
+                # Sanity: also confirm Cloudflare still
+                # holds the tunnel under our name. If it
+                # was deleted out-of-band, fall through to
+                # mint.
+                existing = client.list_by_name(account_id, TUNNEL_NAME)
+                if existing and existing[0].get("id") == cached["id"]:
+                    ctx.logger.info(
+                        "cloudflared.tunnel_reused_from_cache",
+                        name=TUNNEL_NAME,
+                        id=cached["id"],
+                    )
+                    # `TunnelRecord.token` is required; pass the
+                    # on-disk base64 string straight through
+                    # (the cached path doesn't need to re-encode
+                    # anything — the mint path already produced
+                    # the canonical form on the previous run).
+                    record = TunnelRecord(
+                        id=cached["id"],
+                        name=cached["name"],
+                        token=cached.get("tunnel_token", ""),
+                        credentials_file=cached.get(
+                            "credentials_file"
+                        ) or {},
+                    )
 
-        # Persist on disk (mode 0600).
-        tunnel_path = ctx.repo_root / HOST_TUNNEL_FILE
-        tunnel_path.parent.mkdir(parents=True, exist_ok=True)
-        tunnel_path.write_text(json.dumps(tunnel, indent=2) + "\n")
-        os.chmod(tunnel_path, 0o600)
+        if record is None:
+            existing = client.list_by_name(account_id, TUNNEL_NAME)
+            if existing:
+                stale_id = str(existing[0]["id"])
+                ctx.logger.info(
+                    "cloudflared.rotating_stale_tunnel",
+                    name=TUNNEL_NAME,
+                    stale_id=stale_id,
+                    reason=(
+                        "no cached tunnel_token or cached "
+                        "tunnel_id no longer exists in "
+                        "Cloudflare; rotating"
+                    ),
+                )
+                record = client.rotate(
+                    account_id=account_id,
+                    tunnel_id=stale_id,
+                    tunnel_name=TUNNEL_NAME,
+                )
+                ctx.logger.info(
+                    "cloudflared.tunnel_rotated",
+                    new_id=record.id,
+                )
+            else:
+                ctx.logger.info(
+                    "cloudflared.creating_tunnel",
+                    name=TUNNEL_NAME,
+                    account_id=account_id,
+                )
+                record = client.mint(
+                    account_id=account_id, tunnel_name=TUNNEL_NAME
+                )
+                ctx.logger.info(
+                    "cloudflared.tunnel_created",
+                    name=TUNNEL_NAME,
+                    id=record.id,
+                )
+
+        path = ctx.repo_root / HOST_TUNNEL_FILE
+        persist_tunnel(record, path)
         ctx.logger.info(
             "cloudflared.tunnel_token_persisted",
             path=str(HOST_TUNNEL_FILE),
-            id=tunnel_id,
-            jwt_len=len(jwt),
+            id=record.id,
+            token_kind="base64",
         )
-        return tunnel
+        return {
+            "id": record.id,
+            "name": record.name,
+            "tunnel_token": record.token,
+            "credentials_file": record.credentials_file,
+        }
+
+    @staticmethod
+    def _load_cached_tunnel(ctx: Container) -> dict[str, Any] | None:
+        """Read the on-disk tunnel record if it exists. The
+        file may be in either the old or new shape, but the
+        fields we read (`id`, `name`, `tunnel_token`,
+        `credentials_file`, `config_src`) are stable.
+        """
+        path = ctx.repo_root / HOST_TUNNEL_FILE
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        return data if isinstance(data, dict) else None
 
     # ---------- remote ingress provisioning ----------
 
@@ -838,9 +848,9 @@ class CloudflaredApp:
     def _seed_vaultwarden_note(
         self,
         ctx: Container,
-        jwt: str,
+        tunnel_token: str,
     ) -> None:
-        """Push the JWT tunnel token to Vaultwarden as a
+        """Push the tunnel token to Vaultwarden as a
         Secure Note so VaultwardenK8sSync recreates the
         chart-managed `cloudflare-tunnel-remote` Secret if
         helm ever deletes it (e.g. on tofu destroy + apply).
@@ -863,7 +873,7 @@ class CloudflaredApp:
                     "--namespace", VWS_NOTE_NAMESPACE,
                     "--secret-name", VWS_NOTE_SECRET_NAME,
                     "--secret-key", VWS_NOTE_SECRET_KEY,
-                    "--body", jwt,
+                    "--body", tunnel_token,
                     "--password-file", "/tmp/vw.pw",
                 ],
                 cwd=str(ctx.repo_root),
@@ -877,8 +887,9 @@ class CloudflaredApp:
                 "cloudflared.vws_seed_unavailable",
                 error=str(e),
                 resolution=(
-                    "JWT still cached in infra/secrets; "
-                    "cloudflared runs without VKS sync."
+                    "tunnel token still cached in "
+                    "infra/secrets; cloudflared runs "
+                    "without VKS sync."
                 ),
             )
             return
@@ -891,7 +902,7 @@ class CloudflaredApp:
                 stdout=result.stdout.strip()[-500:],
                 resolution=(
                     "re-run scripts/vaultwarden-seed-note.py "
-                    "manually to push the JWT."
+                    "manually to push the tunnel token."
                 ),
             )
             return
@@ -916,7 +927,7 @@ class CloudflaredApp:
                 f"helm upgrade --install {HELM_RELEASE_NAME} "
                 f"{CHART_TGZ} --version {CHART_VERSION} "
                 f"-n {NAMESPACE} --create-namespace "
-                f"--set cloudflare.tunnel_token=$JWT "
+                f"--set cloudflare.tunnel_token=$TUNNEL_TOKEN "
                 f"--set image.tag={APP_VERSION} "
                 f"--set replicaCount=1",
             ],
@@ -934,8 +945,9 @@ class CloudflaredApp:
                 f"Vaultwarden Secure Note "
                 f"({VWS_NOTE_APP}/{VWS_NOTE_NAMESPACE}/"
                 f"{VWS_NOTE_SECRET_NAME}/{VWS_NOTE_SECRET_KEY}) "
-                f"pushing the JWT so VaultwardenK8sSync "
-                f"recreates the chart's Secret on destroy+apply",
+                f"pushing the tunnel token so "
+                f"VaultwardenK8sSync recreates the chart's "
+                f"Secret on destroy+apply",
                 f"Scoped API token `cicd-cluster-cloudflared` "
                 f"(POST /user/tokens on first apply; cached at "
                 f"{HOST_TOKEN_FILE})",
@@ -951,9 +963,9 @@ class CloudflaredApp:
                 (
                     "credentials: scoped API token (mint-once, "
                     f"cached at {HOST_TOKEN_FILE}); tunnel + "
-                    f"JWT cached at {HOST_TUNNEL_FILE}. The "
-                    f"chart-managed Secret "
-                    f"`{VWS_NOTE_SECRET_NAME}` (key "
+                    f"tunnel token cached at "
+                    f"{HOST_TUNNEL_FILE}. The chart-managed "
+                    f"Secret `{VWS_NOTE_SECRET_NAME}` (key "
                     f"`{VWS_NOTE_SECRET_KEY}`) is reseeded by "
                     f"VaultwardenK8sSync on destroy+apply."
                 ),
@@ -1014,14 +1026,15 @@ class CloudflaredApp:
         # 1. Load or mint the scoped API token.
         token = self._load_or_mint_token(ctx, env)
 
-        # 2. Ensure the tunnel + JWT exist on Cloudflare.
+        # 2. Ensure the tunnel + tunnel token exist on
+        #    Cloudflare.
         tunnel = self._ensure_tunnel(
             ctx,
             account_id=account_id,
             token_value=token["value"],
         )
         tunnel_id = tunnel["id"]
-        jwt = tunnel["tunnel_token"]
+        tunnel_token = tunnel["tunnel_token"]
 
         # 3. Resolve the Envoy Gateway Service.
         gw_ns, gw_svc = self._envoy_service_for(
@@ -1058,10 +1071,10 @@ class CloudflaredApp:
             tunnel_id=tunnel_id,
         )
 
-        # 6. Seed the JWT into Vaultwarden so VKS can
-        #    recreate the chart-managed Secret after a
-        #    destroy. Failure is non-fatal here.
-        self._seed_vaultwarden_note(ctx, jwt)
+        # 6. Seed the tunnel token into Vaultwarden so
+        #    VKS can recreate the chart-managed Secret
+        #    after a destroy. Failure is non-fatal here.
+        self._seed_vaultwarden_note(ctx, tunnel_token)
 
         # 7. helm install / upgrade against the vendored
         #    upstream chart. We pass the .tgz path
@@ -1076,25 +1089,19 @@ class CloudflaredApp:
             )
 
         # Render the tunnel_token into a YAML file rather
-        # than passing it via `--set-string`. The
-        # Cloudflare /token endpoint returns either a
-        # base64-wrapped compact JSON `{a,t,s}` (when the
-        # tunnel was created with `config_src=cloudflare`)
-        # or a JWT `a.b.c` triple. Both forms contain
-        # characters that helm's YAML value parser
-        # detects as a flow-mapping (`{...}`) when double-
-        # quoted, which propagates into secret.yaml's
-        # `stringData: tunnelToken:` and is rejected by
-        # the API server with `expected string, got map`.
-        #
-        # The fix: use a YAML **single-quoted** string
-        # (`'foo {bar}'`), which YAML treats as a literal
-        # scalar regardless of the contents. Inside the
-        # quoted string, single quotes are doubled per
-        # YAML 1.2 quoting rules.
+        # than passing it via `--set-string`. The token is
+        # a base64 string with `+` and `/` characters;
+        # passed via `--set-string` it would be coerced by
+        # helm's value parser, then propagated into
+        # secret.yaml's `stringData: tunnelToken:`. Single-
+        # quoting in YAML 1.2 keeps it a literal scalar
+        # regardless of contents; double quotes would risk
+        # character interpretation. Inside the quoted
+        # string, single quotes are doubled per YAML 1.2
+        # quoting rules.
         rendered_values = ctx.repo_root / "values" / "cloudflared-tunnel-remote.values-rendered.yaml"
         rendered_values.parent.mkdir(parents=True, exist_ok=True)
-        token_quoted = "'" + jwt.replace("'", "''") + "'"
+        token_quoted = "'" + tunnel_token.replace("'", "''") + "'"
         rendered_values.write_text(
             "# Auto-generated by the cloudflared app at "
             "apply-time. Do not edit — re-runs overwrite. "
@@ -1178,14 +1185,14 @@ class CloudflaredApp:
             notes.append("scoped API token NOT yet minted")
         if tunnel_path.exists():
             try:
-                jwt_present = bool(
+                token_present = bool(
                     json.loads(tunnel_path.read_text()).get("tunnel_token")
                 )
             except (json.JSONDecodeError, OSError):
-                jwt_present = False
+                token_present = False
             notes.append(
                 f"tunnel credentials cached: {HOST_TUNNEL_FILE}"
-                + (" (with JWT)" if jwt_present else " (no JWT)")
+                + (" (with tunnel token)" if token_present else " (no tunnel token)")
             )
         else:
             notes.append("tunnel credentials NOT yet provisioned")
