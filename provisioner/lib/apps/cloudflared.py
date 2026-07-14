@@ -868,9 +868,9 @@ class CloudflaredApp:
         """
         # Read the in-cluster VKS Secret (BW_CLIENTID +
         # BW_CLIENTSECRET) via kubectl so we can authenticate
-        # against Vaultwarden. Same approach the old
-        # `scripts/vaultwarden-seed-note.py` used; here we
-        # do it in-process via the existing KubectlRunner.
+        # against Vaultwarden. Done in-process via the
+        # existing KubectlRunner so the orchestrator stays
+        # the single source of truth for cluster access.
         try:
             kubeconfig_path = (
                 ctx.proxmox_k3s_repo

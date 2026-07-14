@@ -2,9 +2,8 @@
 read the in-cluster ``vaultwarden-kubernetes-secrets``
 Secret (BW_CLIENTID + BW_CLIENTSECRET).
 
-Mirrors the resolution order in the original
-``scripts/vaultwarden-seed-note.py`` and
-``scripts/reseed-vks-creds.sh``:
+Resolution order, matching the orchestrator's kubectl
+runner convention and ``scripts/reseed-vks-creds.sh``:
 
   1. explicit ``kubeconfig`` argument
   2. ``$KUBECONFIG`` environment variable

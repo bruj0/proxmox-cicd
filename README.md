@@ -64,7 +64,6 @@ extension recipe.
 - [docs/idempotency.md](docs/idempotency.md) — what `make apply` does on a steady-state cluster.
 - [docs/vaultwarden-sync.md](docs/vaultwarden-sync.md) — how VKS consumes Vaultwarden items as k8s Secrets.
 - [docs/vaultwarden-notes.md](docs/vaultwarden-notes.md) — the `vaultwarden-notes` CLI + `VaultwardenClient` library used by the orchestrator.
-- [docs/vaultwarden-seed-note.md](docs/vaultwarden-seed-note.md) — legacy `scripts/vaultwarden-seed-note.py` script (kept for backwards compat).
 - [docs/cloudflared-helm-post-renderer.md](docs/cloudflared-helm-post-renderer.md) — helm ↔ VKS race fix for chart-managed Secrets.
 - [docs/runbooks/add-an-app.md](docs/runbooks/add-an-app.md) — adding a 4th app to the catalog.
 - [docs/runbooks/destroy-and-recreate.md](docs/runbooks/destroy-and-recreate.md) — fresh-cluster recipe.

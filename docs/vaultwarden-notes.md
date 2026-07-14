@@ -20,33 +20,24 @@ It powers two consumers:
   decrypted names + VKS field summary; `decrypt` inspects
   one cipher.
 
-The CLI replaces the previous
-[`scripts/vaultwarden-seed-note.py`](./vaultwarden-seed-note.md)
-script as the **canonical entry point** for manual Vaultwarden
-operations. The legacy script still works (it's a thin wrapper
-that forwards to the library) but new code should call the
-library or CLI directly.
-
 ## Why a library (not just a script)
 
-The script was originally a single 1k-line Python file with
-no public API. As the orchestrator grew, three things became
-hard to do with the script:
+A monolithic CLI script made three things hard:
 
-1. The cloudflared app needed to seed a note **in-process**
+1. The cloudflared app needs to seed a note **in-process**
    during `cicdctl apply cicd`. Spawning a subprocess and
-   parsing its stdout was racy and slow.
-2. Operators needed to **inspect** what VKS sees (decrypted
+   parsing its stdout is racy and slow.
+2. Operators need to **inspect** what VKS sees (decrypted
    names, VKS custom-field summaries) without poking the
    Vaultwarden web UI.
-3. Tests needed to exercise the **same code path** the
+3. Tests need to exercise the **same code path** the
    orchestrator uses, not a separate implementation.
 
 The library + CLI split solves all three: the orchestrator
 imports `VaultwardenClient` directly (no subprocess); the CLI
 is a thin wrapper that exposes the same operations; the
 tests cover the library, and the orchestrator tests mock the
-library (not the script's subprocess exit codes).
+library (not the CLI's subprocess exit codes).
 
 ## Layout
 
@@ -58,7 +49,7 @@ provisioner/lib/vaultwarden/
 │                #   + Bitwarden-Client-Version headers
 ├── client.py    # VaultwardenClient — login + ciphers CRUD
 ├── note.py      # Secure-Note payload builders + VKS constants
-└── kubeconfig.py # Path resolution (matches the legacy script)
+└── kubeconfig.py # KUBECONFIG path resolution
 provisioner/lib/cli/
 └── vaultwarden_notes.py  # multi-subcommand CLI
 ```
@@ -97,8 +88,8 @@ uv run vaultwarden-notes seed \
   --password-file /tmp/vw.pw
 ```
 
-Equivalent to the legacy `scripts/vaultwarden-seed-note.py`
-invocation, but as a console script (`pip install .` /
+Equivalent to a one-off `vaultwarden-notes` invocation.
+The CLI is installed as a console script (`pip install .` /
 `uv tool install .` puts it on `PATH`).
 
 ### List every cipher in your vault
@@ -205,10 +196,9 @@ vaultwarden-notes seed --app APP --namespace NAMESPACE
                        [--vaultwarden-url URL] [--dry-run]
 ```
 
-Mirrors the legacy `scripts/vaultwarden-seed-note.py`
-flags one-for-one. The body is the **plaintext payload**
-that ends up under the named Secret's data key. Use
-`--body @path/to/file` to read from disk.
+The body is the **plaintext payload** that ends up under
+the named Secret's data key. Use `--body @path/to/file`
+to read from disk.
 
 ### `delete` subcommand
 
@@ -242,11 +232,9 @@ or a custom field name. Default is `notes`.
 
 ## The Bitwarden wire protocol (recap)
 
-The library implements the same protocol the
-[`vaultwarden-seed-note.py`](./vaultwarden-seed-note.md)
-script documented; the docstrings in `crypto.py` /
-`client.py` reference the script's existing sections.
-The short version:
+The docstrings in `crypto.py` / `client.py` / `http.py`
+walk through each protocol step in detail. The short
+version:
 
 ```mermaid
 flowchart LR
@@ -278,20 +266,15 @@ clients and are correctly handled here:
    `8` (Firefox) for browser, `25` for the CLI, etc.
    `http.py` defaults to `25`.
 
-## Differences from the legacy script
+## Design
 
-| Concern | Legacy script | Library + CLI |
-| --- | --- | --- |
-| Entry point | `uv run scripts/vaultwarden-seed-note.py …` | `uv run vaultwarden-notes seed …` (or `import` for in-process use) |
-| Subprocess overhead | one Python interpreter per invocation | none for in-process; CLI spawns one Python per invocation |
-| API surface | CLI flags only | `VaultwardenClient` class + helpers; CLI is a thin wrapper |
-| Tests | 104 tests against the script | 21 crypto tests + 6 note-payload tests against the library; orchestrator tests mock the library |
-| Library import | not importable | `from provisioner.lib.vaultwarden import VaultwardenClient` |
-
-The legacy `scripts/vaultwarden-seed-note.py` is kept on
-disk for backwards compatibility (callers that invoke it
-subprocess-style still work) but new code should use the
-library or CLI.
+| Concern | Library + CLI |
+| --- | --- |
+| Entry point | `uv run vaultwarden-notes seed …` (CLI) or `from provisioner.lib.vaultwarden import VaultwardenClient` (in-process) |
+| Subprocess overhead | none for in-process; CLI spawns one Python per invocation |
+| API surface | `VaultwardenClient` class + helpers; CLI is a thin wrapper |
+| Tests | 21 crypto tests + 6 note-payload tests against the library; orchestrator tests mock the library |
+| Library import | `from provisioner.lib.vaultwarden import VaultwardenClient` |
 
 ## Where the values live
 
@@ -299,15 +282,12 @@ library or CLI.
 | --- | --- |
 | `provisioner/lib/vaultwarden/` | the library (re-usable from any Python) |
 | `provisioner/lib/cli/vaultwarden_notes.py` | the CLI |
-| `scripts/vaultwarden-seed-note.py` | legacy script (kept for backwards compat) |
 | `provisioner/tests/test_vaultwarden_crypto.py` | 21 unit tests pinning the crypto |
 | `provisioner/tests/test_vaultwarden_note.py` | 6 unit tests pinning the note payload shape |
 | `provisioner/lib/apps/cloudflared.py` | the orchestrator consumer (`_seed_vaultwarden_note`) |
 
 ## See also
 
-- [`docs/vaultwarden-seed-note.md`](./vaultwarden-seed-note.md) —
-  the legacy script's reference (kept for backwards compat).
 - [`docs/vaultwarden-sync.md`](./vaultwarden-sync.md) —
   how VKS consumes the ciphers this library / CLI creates.
 - [`docs/runbooks/setup-vaultwarden-sync.md`](./runbooks/setup-vaultwarden-sync.md) —

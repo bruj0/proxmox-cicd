@@ -1,12 +1,11 @@
 """`provisioner.lib.vaultwarden` — library for talking to a
 Vaultwarden (Bitwarden-compatible) REST API from Python.
 
-This package is the refactored spine of the original
-`scripts/vaultwarden-seed-note.py`. It exposes the same
-crypto + HTTP + auth helpers as importable functions and
-classes so the orchestrator and other scripts can reuse them
-without re-implementing Bitwarden's PBKDF2 → AES-256-CBC +
-HMAC-SHA256 envelope dance.
+A pure library: no subprocess plumbing, no CLI flags. The
+orchestrator (`provisioner/lib/apps/cloudflared.py` and
+similar) imports `VaultwardenClient` directly to seed
+Secure Notes that VaultwardenK8sSync will materialise
+into Kubernetes Secrets.
 
 Module map:
 
@@ -24,8 +23,10 @@ Module map:
     specific cipher field triple (`namespaces`,
     `secret-name`, `secret-key`).
 
-The CLI lives at `scripts/vaultwarden-notes.py` and exposes
-subcommands `seed`, `delete`, `list`, `decrypt`.
+The companion CLI lives at
+`provisioner/lib/cli/vaultwarden_notes.py` and exposes
+subcommands `seed`, `delete`, `list`, `decrypt`. It's
+installed as the `vaultwarden-notes` console script.
 """
 
 from __future__ import annotations

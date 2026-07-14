@@ -244,9 +244,6 @@ for the full design.
 - [`docs/vaultwarden-notes.md`](./vaultwarden-notes.md) —
   the in-process `VaultwardenClient` library + `vaultwarden-notes`
   CLI used by the orchestrator to seed VKS notes.
-- [`docs/vaultwarden-seed-note.md`](./vaultwarden-seed-note.md) —
-  the legacy `scripts/vaultwarden-seed-note.py` script (kept
-  for backwards compat).
 - [`docs/runbooks/setup-vaultwarden-sync.md`](./runbooks/setup-vaultwarden-sync.md) —
   the operator runbook for one-time VKS setup.
 - [`docs/cloudflared-helm-post-renderer.md`](./cloudflared-helm-post-renderer.md) —

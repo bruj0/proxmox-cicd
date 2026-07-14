@@ -17,7 +17,8 @@ What we lock down:
       * PUT /accounts/{acc}/cfd_tunnel/{tun}/configurations
       * GET /zones/{zone}/dns_records -> []
       * POST /zones/{zone}/dns_records
-      * subprocess.run with the right VWS note args
+      * VaultwardenClient.login + create_cipher (in-process,
+        no subprocess to a seed-note script)
       * helm install with vendored chart + tunnel_token via --set
       * tunnel_token persisted (base64 string, mode 0600)
   - apply() on a re-run with existing tunnel:
@@ -27,7 +28,7 @@ What we lock down:
         proxied=True (auto-corrects drift)
   - apply() failure paths:
       * ingress PUT returning 400 -> RuntimeError surfaces
-      * vaultwarden-seed-note.py failing -> non-fatal
+      * VaultwardenClient.create_cipher raising -> non-fatal
         warning, helm install still completes
   - destroy(): helm uninstall + namespace delete
 """

@@ -10,12 +10,11 @@ Vaultwarden (and the upstream Bitwarden cloud) expect on
 the wire. They are the only dependency between this package
 and the cryptography library.
 
-The most subtle rule — and the one that took the original
-`scripts/vaultwarden-seed-note.py` two debugging sessions
-to get right — is the **padding on the server auth hash**:
-``PBKDF2-HMAC-SHA256(master_key, master_password, 1)``
-base64-encodes to 44 chars, and the trailing ``=`` MUST
-be preserved. Vaultwarden's stored password-verification
+The most subtle rule — and the one that took two debugging
+sessions to get right — is the **padding on the server
+auth hash**: ``PBKDF2-HMAC-SHA256(master_key, master_password,
+1)`` base64-encodes to 44 chars, and the trailing ``=``
+MUST be preserved. Vaultwarden's stored password-verification
 hash is ``PBKDF2-HMAC-SHA256(auth_hash_string.as_bytes(),
 salt, user.password_iterations)`` — the raw auth hash is
 the input bytes, including its ``=``. Stripping the
