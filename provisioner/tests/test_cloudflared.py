@@ -35,9 +35,7 @@ What we lock down:
 from __future__ import annotations
 
 import base64
-import io
 import json
-import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -49,10 +47,6 @@ from provisioner.lib.apps.cloudflared import (
     CHART_TGZ,
     CHART_VERSION,
     HELM_RELEASE_NAME,
-    NAMESPACE,
-    TUNNEL_NAME,
-    VWS_NOTE_APP,
-    VWS_NOTE_NAMESPACE,
     VWS_NOTE_SECRET_KEY,
     VWS_NOTE_SECRET_NAME,
     CloudflaredApp,

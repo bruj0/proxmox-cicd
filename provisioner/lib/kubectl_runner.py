@@ -59,7 +59,7 @@ class KubectlRunner:
     kubeconfig: Kubeconfig
     subprocess_runner: SubprocessRunner = subprocess.run
     env_base: dict[str, str] | None = None
-    logger: "StructuredLogger | None" = None
+    logger: StructuredLogger | None = None
 
     def _base_cmd(self, *args: str) -> list[str]:
         return [

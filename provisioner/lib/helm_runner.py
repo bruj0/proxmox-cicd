@@ -55,7 +55,7 @@ class HelmRunner:
 
     subprocess_runner: SubprocessRunner = subprocess.run
     env_base: dict[str, str] | None = None
-    logger: "StructuredLogger | None" = None
+    logger: StructuredLogger | None = None
 
     def _env(self) -> dict[str, str]:
         env = dict(self.env_base) if self.env_base else dict(os.environ)

@@ -18,6 +18,7 @@ dependencies = [
 [project.scripts]
 # `uv tool install .` (or `pip install .`) registers both CLIs on PATH.
 cicdctl = "provisioner.cli:main"
+vaultwarden-notes = "provisioner.lib.cli.vaultwarden_notes:main"
 
 [build-system]
 requires = ["hatchling"]

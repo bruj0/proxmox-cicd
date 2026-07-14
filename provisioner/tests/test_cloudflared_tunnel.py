@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 import stat
 from pathlib import Path
 from typing import Any
@@ -39,11 +38,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from provisioner.lib.apps.cloudflared_tunnel import (
-    CF_API_BASE,
     CloudflaredTunnelClient,
     TunnelRecord,
     _CfError,
-    _cf_request,
     decode_credentials_blob,
     persist as persist_tunnel,
 )

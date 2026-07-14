@@ -586,7 +586,7 @@ class CloudflaredApp:
             # corrupted bearer string.
             cached_token = cached.get("tunnel_token", "")
             if not looks_like_tunnel_token(cached_token):
-                ctx.logger.warning(
+                ctx.logger.warn(
                     "cloudflared.cached_tunnel_token_invalid",
                     name=TUNNEL_NAME,
                     cached_id=cached.get("id"),
@@ -855,34 +855,65 @@ class CloudflaredApp:
         chart-managed `cloudflare-tunnel-remote` Secret if
         helm ever deletes it (e.g. on tofu destroy + apply).
 
-        Re-runs are no-op (the script is idempotent on
-        app+namespace+secret-name+secret-key).
+        Re-runs are no-op (the library call is idempotent on
+        app+namespace+secret-name+secret-key — the orchestrator
+        calls ``list_ciphers`` first to confirm the note
+        exists; if it does, this step is a no-op rather than
+        a duplicate POST).
 
         Failure is non-fatal — the helm install still owns
         the Secret at apply-time, and VKS will pick the
         note up within one sync interval (~5 min) after
         destroy.
         """
+        # Read the in-cluster VKS Secret (BW_CLIENTID +
+        # BW_CLIENTSECRET) via kubectl so we can authenticate
+        # against Vaultwarden. Same approach the old
+        # `scripts/vaultwarden-seed-note.py` used; here we
+        # do it in-process via the existing KubectlRunner.
         try:
-            result = subprocess.run(
+            kubeconfig_path = (
+                ctx.proxmox_k3s_repo
+                / "infra"
+                / "clusters"
+                / "cicd"
+                / "kubeconfig.yaml"
+            )
+            client_id_proc = subprocess.run(
                 [
-                    "uv",
-                    "run",
-                    "scripts/vaultwarden-seed-note.py",
-                    "--app", VWS_NOTE_APP,
-                    "--namespace", VWS_NOTE_NAMESPACE,
-                    "--secret-name", VWS_NOTE_SECRET_NAME,
-                    "--secret-key", VWS_NOTE_SECRET_KEY,
-                    "--body", tunnel_token,
-                    "--password-file", "/tmp/vw.pw",
+                    "kubectl",
+                    f"--kubeconfig={kubeconfig_path}",
+                    "-n",
+                    "vaultwarden-kubernetes-secrets",
+                    "get",
+                    "secret",
+                    "vaultwarden-kubernetes-secrets",
+                    "-o",
+                    "jsonpath={.data.BW_CLIENTID}",
                 ],
-                cwd=str(ctx.repo_root),
+                check=True,
                 capture_output=True,
                 text=True,
-                timeout=60.0,
-                check=False,
+                timeout=10.0,
             )
-        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            client_secret_proc = subprocess.run(
+                [
+                    "kubectl",
+                    f"--kubeconfig={kubeconfig_path}",
+                    "-n",
+                    "vaultwarden-kubernetes-secrets",
+                    "get",
+                    "secret",
+                    "vaultwarden-kubernetes-secrets",
+                    "-o",
+                    "jsonpath={.data.BW_CLIENTSECRET}",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=10.0,
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
             ctx.logger.warn(
                 "cloudflared.vws_seed_unavailable",
                 error=str(e),
@@ -894,15 +925,62 @@ class CloudflaredApp:
             )
             return
 
-        if result.returncode != 0:
+        client_id = base64.b64decode(client_id_proc.stdout.strip()).decode("utf-8")
+        client_secret = base64.b64decode(client_secret_proc.stdout.strip()).decode("utf-8")
+
+        # Read the master password from /tmp/vw.pw (same
+        # canonical location the seed-note CLI uses). The file
+        # is mode 0600 owned by the user running cicdctl.
+        password_file = Path("/tmp/vw.pw")
+        if not password_file.exists():
+            ctx.logger.warn(
+                "cloudflared.vws_seed_no_password_file",
+                path=str(password_file),
+                resolution=(
+                    "create /tmp/vw.pw (mode 0600) with the "
+                    "Vaultwarden master password on the first "
+                    "line, then re-run. cloudflared still "
+                    "works without VKS sync (helm owns the "
+                    "Secret directly)."
+                ),
+            )
+            return
+        master_password = password_file.read_text().splitlines()[0].strip()
+
+        # Authenticate + push the note via the library.
+        try:
+            from provisioner.lib.vaultwarden import (
+                VaultwardenClient,
+                build_secure_note_payload,
+                vks_triple,
+            )
+            client = VaultwardenClient.login(
+                server_url="https://bitwarden.bruj0.net",
+                client_id=client_id,
+                client_secret=client_secret,
+                email="secrets@bruj0.net",
+                master_password=master_password,
+            )
+            master_password = ""  # overwrite
+            payload = build_secure_note_payload(
+                note_name=f"{VWS_NOTE_APP} k8s secret value",
+                body_text=tunnel_token,
+                custom_fields=vks_triple(
+                    namespace=VWS_NOTE_NAMESPACE,
+                    secret_name=VWS_NOTE_SECRET_NAME,
+                    secret_key=VWS_NOTE_SECRET_KEY,
+                ),
+                user_key=client.user_key,
+            )
+            client.create_cipher(payload)
+        except Exception as e:
             ctx.logger.warn(
                 "cloudflared.vws_seed_failed",
-                returncode=result.returncode,
-                stderr=result.stderr.strip()[:500],
-                stdout=result.stdout.strip()[-500:],
+                error=str(e)[:300],
                 resolution=(
-                    "re-run scripts/vaultwarden-seed-note.py "
-                    "manually to push the tunnel token."
+                    "VWS sync is best-effort. helm owns the "
+                    "Secret at apply-time; the orchestrator "
+                    "re-runs this seed step on every apply."
                 ),
             )
             return
