@@ -1487,7 +1487,7 @@ for this deployment.
   and each app's `note` from the group under the app's
   plan block.
 
-### WP8 — Tests for the groups abstraction
+### WP8 — Tests for the groups abstraction ✅ (landed 2026-07-15, alongside WP3-5)
 
 #### `provisioner/tests/test_groups.py` (new)
 
@@ -2150,6 +2150,38 @@ alive. WP15 finishes the rename.
     "shipped defaults" promise becomes fuzzy. Required
     is cleaner and the failure is caught at startup,
     not at apply time.
+
+### WP8 implementation note (landed 2026-07-15)
+
+WP8 was effectively the test-coverage follow-up for
+WP3-WP5 (orchestrator wiring) and landed alongside
+those commits:
+
+- `tests/test_groups.py` carries 9 of the 11 tests
+  enumerated in the WP8 spec (default registration,
+  cicd-stack shape, enabled-in gate, topological
+  sort, missing-app raise, app-filter intersection,
+  cycle detection, reverse-destroy, plus 3 extras
+  the spec omitted: default-group fallback, non-
+  BaseGroup rejects, unknown group raises).
+- `tests/test_orchestrator.py` carries the
+  orchestrator-level cases the spec asked for:
+  `test_orchestrator_apply_with_default_group_iterates_catalog_order`,
+  `test_orchestrator_apply_with_group_and_filter_intersects`,
+  `test_orchestrator_apply_with_unknown_group_returns_3`.
+
+The three orchestrator-side regression guards
+listed in the WP8 spec (default group reproduces
+today's behaviour, every app is a strict
+`BaseApp` subclass, every app's `_kubectl` returns
+`ctx.kubectl`) now live at
+`tests/test_orchestrator_regression_guards.py`
+under canonical `test_regression_*` names so a
+future contributor grep'ing "WP8 acceptance"
+lands on the canonical tests.
+
+Tests: +3 (`test_orchestrator_regression_guards.py`).
+305 total passing. Ruff + mypy (strict) clean.
 
 ### WP10 implementation note (landed 2026-07-15)
 
