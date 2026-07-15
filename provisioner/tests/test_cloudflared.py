@@ -181,6 +181,11 @@ def _build_ctx(tmp_path: Path) -> Container:
                 "CLOUDFLARE_DOMAIN=bruj0.net",
                 "CLOUDFLARE_GLOBAL_API_KEY=global-key-not-persisted",
                 "CLOUDFLARE_GLOBAL_API_EMAIL=secrets@bruj0.net",
+                # The Vaultwarden master password lives in
+                # .env only — never in /tmp/vw.pw, never in
+                # the cluster. The orchestrator reads from
+                # here for the same reason VKS does.
+                "VAULTWARDEN__MASTERPASSWORD=master-password",
                 "",
             ]
         )
@@ -393,14 +398,8 @@ def test_vws_seed_skipped_when_triple_already_exists(tmp_path: Path) -> None:
     from provisioner.lib.vaultwarden import VaultwardenClient as RealClient
 
     ctx = _build_ctx(tmp_path)
-    # Use a temp password file INSIDE tmp_path, NOT the
-    # shared ``/tmp/vw.pw`` — the orchestrator reads
-    # that exact path, so a test that writes to it would
-    # silently corrupt the operator's live password.
-    # We monkey-patch the helper's lookup below.
-    fake_pw = tmp_path / "vw.pw"
-    fake_pw.write_text("master-password\n")
-    fake_pw.chmod(0o600)
+    # The master password lives in .env only — set by
+    # ``_build_ctx``. No /tmp/vw.pw file, no Path patch.
 
     stub = _StubVaultClient(ciphers=[
         _cipher_with_triple("cloudflared", "cloudflare-tunnel-remote", "tunnelToken"),
@@ -426,13 +425,9 @@ def test_vws_seed_skipped_when_triple_already_exists(tmp_path: Path) -> None:
          _um.patch.object(RealClient, "decrypt_cipher_field_name", stub.decrypt_cipher_field_name), \
          _um.patch.object(RealClient, "decrypt_cipher_field", stub.decrypt_cipher_field), \
          _um.patch.object(RealClient, "create_cipher", stub.create_cipher), \
-         _um.patch("subprocess.run", side_effect=fake_subproc), \
-         _um.patch(
-             "provisioner.lib.apps.cloudflared.Path",
-             lambda *a, **kw: fake_pw if a and str(a[0]) == "/tmp/vw.pw" else Path(*a, **kw),
-         ):
+         _um.patch("subprocess.run", side_effect=fake_subproc):
         # Call the private seed helper directly.
-        CloudflaredApp()._seed_vaultwarden_note(ctx, TUNNEL_TOKEN_PLAINTEXT)
+        CloudflaredApp()._seed_vaultwarden_note(ctx, TUNNEL_TOKEN_PLAINTEXT, catalog={})
 
     # No new ciphers should have been created.
     assert stub.created == []
@@ -449,10 +444,7 @@ def test_vws_seed_creates_when_no_matching_triple(tmp_path: Path) -> None:
     from provisioner.lib.vaultwarden import VaultwardenClient as RealClient
 
     ctx = _build_ctx(tmp_path)
-    fake_pw = tmp_path / "vw.pw"
-    fake_pw.write_text("master-password\n")
-    fake_pw.chmod(0o600)
-
+    # Master password is set in .env via ``_build_ctx``.
     # Empty vault → no matching triple.
     stub = _StubVaultClient(ciphers=[
         _cipher_with_triple("default", "some-other-secret", "password"),  # unrelated
@@ -474,12 +466,8 @@ def test_vws_seed_creates_when_no_matching_triple(tmp_path: Path) -> None:
          _um.patch.object(RealClient, "decrypt_cipher_field_name", stub.decrypt_cipher_field_name), \
          _um.patch.object(RealClient, "decrypt_cipher_field", stub.decrypt_cipher_field), \
          _um.patch.object(RealClient, "create_cipher", stub.create_cipher), \
-         _um.patch("subprocess.run", side_effect=fake_subproc), \
-         _um.patch(
-             "provisioner.lib.apps.cloudflared.Path",
-             lambda *a, **kw: fake_pw if a and str(a[0]) == "/tmp/vw.pw" else Path(*a, **kw),
-         ):
-        CloudflaredApp()._seed_vaultwarden_note(ctx, TUNNEL_TOKEN_PLAINTEXT)
+         _um.patch("subprocess.run", side_effect=fake_subproc):
+        CloudflaredApp()._seed_vaultwarden_note(ctx, TUNNEL_TOKEN_PLAINTEXT, catalog={})
 
     assert len(stub.created) == 1
     assert stub.list_calls >= 1

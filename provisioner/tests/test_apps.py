@@ -138,7 +138,7 @@ def test_gitea_apply_runs_helm_then_kubectl(tmp_path: Path) -> None:
         "      ROOT_URL: 'https://$PUBLIC_HOST/'\n"
         "      DOMAIN: '$PUBLIC_HOST'\n"
         "      SSH_DOMAIN: '$PUBLIC_HOST'\n"
-        "      PROTOCOL: '$PROTOCOL'\n"
+        "      PROTOCOL: 'http'\n"
         "    service:\n"
         "      DISABLE_REGISTRATION: true\n"
     )
@@ -150,7 +150,16 @@ def test_gitea_apply_runs_helm_then_kubectl(tmp_path: Path) -> None:
     _write_kubeconfig(k8s / "kubeconfig.yaml")
 
     ctx = _make_ctx(repo)
-    catalog = {"ingress": {"base_domain": "example.net"}}
+    catalog = {
+        "ingress": {"base_domain": "example.net"},
+        # Skip the Vaultwarden seed step in this test
+        # (covered by its own dedicated test). Without
+        # this the apply path would try to read the
+        # BW_CLIENTID/BW_CLIENTSECRET Secret + log in to
+        # a real Vaultwarden, neither of which the unit
+        # test mocks.
+        "vaultwarden": {"skip_admin_seed": True},
+    }
 
     # Mock helm + kubectl.
     fake_run = MagicMock(return_value=MagicMock(returncode=0, stdout="", stderr=""))
@@ -161,15 +170,35 @@ def test_gitea_apply_runs_helm_then_kubectl(tmp_path: Path) -> None:
     kubectl_mock = MagicMock()
     kubectl_mock.apply = fake_run
     kubectl_mock.delete_namespace = fake_run
+    # The admin-pw lifecycle in apply step 1b reads the
+    # live `gitea-admin-password` Secret via kubectl.get
+    # (drift-check) AND the VKS Secret (Vaultwarden
+    # creds) via kubectl.get. Pretend both calls return
+    # "not found" so the apply proceeds to `kubectl apply`
+    # (which is also fake_run). kubectl.get returncode != 0
+    # simulates "not found" without making the mock return
+    # a real base64 string.
+    kubectl_mock.get = MagicMock(
+        return_value=MagicMock(returncode=1, stdout="", stderr="not found")
+    )
     ctx.kubectl = kubectl_mock
 
     result = GiteaApp().apply(ctx, catalog)
 
-    # 1. helm was called with the right args.
-    # fake_run is shared between helm_mock.install_or_upgrade
-    # and kubectl_mock.apply; first call is helm.
-    args, kwargs = fake_run.call_args_list[0]
-    assert kwargs["release"] == "gitea"
+    # 1. helm was called with the right args. fake_run
+    #    is shared between helm_mock.install_or_upgrade
+    #    and kubectl_mock.apply. With the admin-pw
+    #    lifecycle in front of helm, the call order is:
+    #      [0] kubectl apply Secret=gitea-admin-password
+    #      [1] helm install_or_upgrade gitea
+    #      [2] kubectl apply Gateway/HTTPRoute
+    #    We locate the helm call by `release=gitea` since
+    #    the kubectl calls don't carry that kwarg.
+    helm_call = next(
+        c for c in fake_run.call_args_list
+        if c.kwargs.get("release") == "gitea"
+    )
+    args, kwargs = helm_call
     assert kwargs["chart"].startswith("oci://")
     assert kwargs["namespace"] == "gitea"
     assert kwargs["version"] == CHART_VERSION
@@ -180,8 +209,11 @@ def test_gitea_apply_runs_helm_then_kubectl(tmp_path: Path) -> None:
     # the committed defaults — see GiteaApp.apply docstring.
     assert kwargs["values_files"][0].name == "gitea.values-rendered.yaml"
 
-    # 2. The kubectl.apply call also went through.
-    assert fake_run.call_count == 2
+    # 2. Two kubectl.apply calls (cluster Secret +
+    #    Gateway/HTTPRoute) + 1 helm install = 3 total
+    #    calls to fake_run. (kubectl.get goes through
+    #    kubectl_mock.get, not fake_run.)
+    assert fake_run.call_count == 3
 
     # 3. The rendered sibling actually exists on disk, with
     #    the sentinels substituted. This is what would
@@ -193,7 +225,6 @@ def test_gitea_apply_runs_helm_then_kubectl(tmp_path: Path) -> None:
     assert rendered.exists()
     text = rendered.read_text()
     assert "$PUBLIC_HOST" not in text
-    assert "$PROTOCOL" not in text
     assert "gitea.example.net" in text
     assert "https" in text
 
@@ -227,8 +258,29 @@ def test_gitea_apply_fails_when_helm_fails(tmp_path: Path) -> None:
     fake = MagicMock(return_value=MagicMock(returncode=1, stderr="boom"))
     ctx.helm = MagicMock(install_or_upgrade=fake, uninstall=fake)
 
+    # Admin-pw lifecycle (step 1b) runs before helm and
+    # needs kubectl.get mocked (drift-check + VKS-cred
+    # read) + kubectl.apply mocked (Secret write). Both
+    # return success; the test still asserts the helm
+    # failure bubbles up because helm is what the test
+    # cares about.
+    kubectl_mock = MagicMock()
+    kubectl_mock.get = MagicMock(
+        return_value=MagicMock(returncode=1, stdout="", stderr="not found")
+    )
+    kubectl_mock.apply = MagicMock(
+        return_value=MagicMock(returncode=0, stdout="", stderr="")
+    )
+    ctx.kubectl = kubectl_mock
+
     with pytest.raises(RuntimeError) as ei:
-        GiteaApp().apply(ctx, {"ingress": {"base_domain": "x"}})
+        GiteaApp().apply(
+            ctx,
+            {
+                "ingress": {"base_domain": "x"},
+                "vaultwarden": {"skip_admin_seed": True},
+            },
+        )
     assert "helm upgrade --install gitea failed" in str(ei.value)
 
 

@@ -156,14 +156,52 @@ deployment:
       cpu: "1000m"
       memory: "512Mi"
 
-# 9. Admin user — initialOnlyRequireReset. The bootstrap
-#    prints the one-time plaintext to stdout on first apply
-#    and immediately stores it in Bitwarden Secrets Manager
-#    (see apps/bitwarden_sm.py and runbook rotate-gitea-tokens).
+# 9. Admin user — owned by the orchestrator + Vaultwarden.
+#    The chart reads username/password from `existingSecret`
+#    and the initContainer calls
+#    `gitea admin user change-password` on every install/upgrade
+#    when passwordMode=keepUpdated (the chart's documented
+#    contract: see templates/gitea/init.yaml lines 118-129).
+#
+#    Rotation flow (operator):
+#      1. edit /tmp/gitea-admin.pw on the orchestrator host
+#         (mode 0600; the canonical source of truth)
+#      2. `uv run cicdctl apply cicd --app gitea`
+#      3. orchestrator updates Secret `gitea-admin-password` in
+#         cluster namespace `gitea` (key=password) via
+#         `kubectl apply --server-side`
+#      4. orchestrator pushes the new password into Vaultwarden
+#         as a Secure Note with VKS custom-fields triple
+#         namespaces=gitea, secret-name=gitea-admin-password,
+#         secret-key=password; VaultwardenK8sSync reconciles
+#         the cluster Secret back to that value within one
+#         sync interval (~30s)
+#      5. chart's initContainer reads GITEA_ADMIN_PASSWORD
+#         from the Secret, calls `gitea admin user
+#         change-password --must-change-password=false`,
+#         Gitea now authenticates with the new password
+#
+#    First install on a fresh cluster: the orchestrator
+#    generates a strong random password into /tmp/gitea-admin.pw
+#    (mode 0600), so the operator never has to type one in
+#    or copy one out of pod logs.
+#
+#    See `provisioner/lib/apps/gitea.py::_ensure_admin_password`
+#    for the orchestrator-side implementation.
 gitea:
   admin:
+    # The Secret lives in the same namespace as Gitea itself;
+    # the chart's deployment.yaml envFrom block secretKeyRefs
+    # against `existingSecret` for both GITEA_ADMIN_USERNAME
+    # and GITEA_ADMIN_PASSWORD (key: password).
+    existingSecret: gitea-admin-password
+    # keepUpdated → initContainer resets the password on every
+    # pod restart, so editing /tmp/gitea-admin.pw + re-applying
+    # is enough to rotate. Do NOT set `password` here — the
+    # chart's helm-secrets lint rejects it when
+    # `existingSecret` is set.
+    passwordMode: keepUpdated
     username: gitea_admin
-    passwordMode: initialOnlyRequireReset
   config:
     server:
       # The chart's `gitea.inline_configuration.defaults.server`

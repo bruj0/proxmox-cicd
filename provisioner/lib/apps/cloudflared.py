@@ -845,10 +845,66 @@ class CloudflaredApp:
 
     # ---------- Vaultwarden sync-side note ----------
 
+    @staticmethod
+    def _read_dotenv_creds(
+        repo_root: Path, catalog: dict[str, Any]
+    ) -> dict[str, str]:
+        """Resolve master_password + server_url + email
+        from catalog.yaml + .env, in catalog > .env >
+        canonical-defaults precedence. Mirrors GiteaApp
+        identically; both apps read from the same .env
+        contract (canonical key ``VAULTWARDEN__MASTERPASSWORD``).
+
+        The .env parser is owned by VaultwardenK8sSyncApp
+        (the VKS Secret contract is the system of record
+        for Vaultwarden login knobs); this method just
+        wraps it with catalog-aliasing. Static so tests
+        can pin each precedence rule in isolation.
+        """
+        from .vaultwarden_k8s_sync import VaultwardenK8sSyncApp
+
+        env_creds = VaultwardenK8sSyncApp._load_dotenv(repo_root)
+        catalog_vw = catalog.get("vaultwarden", {}) or {}
+
+        master_password = (
+            catalog_vw.get("master_password", "")
+            or env_creds.get("VAULTWARDEN__MASTERPASSWORD", "")
+        )
+
+        server_url = (
+            catalog_vw.get("server_url", "")
+            or env_creds.get("VAULTWARDEN__SERVERURL", "")
+            or "https://bitwarden.bruj0.net"
+        )
+
+        dotenv_email = ""
+        env_path = repo_root / ".env"
+        if env_path.exists():
+            for raw in env_path.read_text().splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                if k.strip().lower() in ("client_email", "email"):
+                    dotenv_email = v.strip().strip('"').strip("'")
+                    break
+        email = (
+            catalog_vw.get("email", "")
+            or dotenv_email
+            or "secrets@bruj0.net"
+        )
+
+        return {
+            "master_password": master_password,
+            "server_url": server_url,
+            "email": email,
+        }
+
     def _seed_vaultwarden_note(
         self,
         ctx: Container,
         tunnel_token: str,
+        catalog: dict[str, Any],
     ) -> None:
         """Push the tunnel token to Vaultwarden as a
         Secure Note so VaultwardenK8sSync recreates the
@@ -928,24 +984,28 @@ class CloudflaredApp:
         client_id = base64.b64decode(client_id_proc.stdout.strip()).decode("utf-8")
         client_secret = base64.b64decode(client_secret_proc.stdout.strip()).decode("utf-8")
 
-        # Read the master password from /tmp/vw.pw (same
-        # canonical location the seed-note CLI uses). The file
-        # is mode 0600 owned by the user running cicdctl.
-        password_file = Path("/tmp/vw.pw")
-        if not password_file.exists():
+        # Read the master password from the operator's .env
+        # via the same helper gitea.py / gitea_runner.py
+        # use. The file is mode 0600 owned by the user
+        # running cicdctl. There is intentionally no
+        # /tmp/vw.pw fallback — the orchestrator contract is
+        # that Vaultwarden credentials live in .env only,
+        # never in cluster Secrets or other hosts files.
+        creds = self._read_dotenv_creds(ctx.repo_root, catalog)
+        master_password = creds["master_password"]
+        if not master_password:
             ctx.logger.warn(
-                "cloudflared.vws_seed_no_password_file",
-                path=str(password_file),
+                "cloudflared.vws_seed_no_master_password",
                 resolution=(
-                    "create /tmp/vw.pw (mode 0600) with the "
-                    "Vaultwarden master password on the first "
-                    "line, then re-run. cloudflared still "
-                    "works without VKS sync (helm owns the "
-                    "Secret directly)."
+                    "VAULTWARDEN__MASTERPASSWORD missing from "
+                    f"{ctx.repo_root / '.env'}; cloudflared "
+                    "still works without VKS sync (helm owns "
+                    "the Secret directly). Add the key and "
+                    "re-run if you want the tunnel token "
+                    "live-synchronized from Vaultwarden."
                 ),
             )
             return
-        master_password = password_file.read_text().splitlines()[0].strip()
 
         # Authenticate + push the note via the library.
         try:
@@ -1196,7 +1256,7 @@ class CloudflaredApp:
         # 6. Seed the tunnel token into Vaultwarden so
         #    VKS can recreate the chart-managed Secret
         #    after a destroy. Failure is non-fatal here.
-        self._seed_vaultwarden_note(ctx, tunnel_token)
+        self._seed_vaultwarden_note(ctx, tunnel_token, catalog)
 
         # 7. helm install / upgrade against the vendored
         #    upstream chart. We pass the .tgz path

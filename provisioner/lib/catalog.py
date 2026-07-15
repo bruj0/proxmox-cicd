@@ -54,6 +54,17 @@ class Catalog:
     apps: dict[str, AppConfig]
     ingress_base_domain: str
     vaultwarden_server_url: str = ""
+    # Optional knobs the orchestrator reads when it talks
+    # to Vaultwarden. `skip_admin_seed` exists so the
+    # gitea app's apply can run in unit-test mode
+    # without a live Vaultwarden (cluster Secret is
+    # still written; only the Secure Note push is
+    # suppressed). `email` overrides the canonical
+    # operator account the Vaultwarden client logs in
+    # as.
+    vaultwarden_email: str = ""
+    vaultwarden_skip_admin_seed: bool = False
+    vaultwarden_skip_runner_seed: bool = False
     source_path: Path | None = None
 
     def enabled_app_names(self) -> list[str]:
@@ -66,7 +77,12 @@ class Catalog:
         return {
             "cluster_name": self.cluster_name,
             "ingress": {"base_domain": self.ingress_base_domain},
-            "vaultwarden": {"server_url": self.vaultwarden_server_url},
+            "vaultwarden": {
+                "server_url": self.vaultwarden_server_url,
+                "email": self.vaultwarden_email,
+                "skip_admin_seed": self.vaultwarden_skip_admin_seed,
+                "skip_runner_seed": self.vaultwarden_skip_runner_seed,
+            },
             "apps": {
                 name: {"enabled": cfg.enabled, **cfg.extra}
                 for name, cfg in self.apps.items()
@@ -209,10 +225,22 @@ def load_catalog(path: Path, cluster_name: str) -> Catalog:
     # vaultwarden.* (optional but recorded)
     vw = parsed.get("vaultwarden", {})
     vw_url = ""
+    vw_email = ""
+    vw_skip_admin_seed = False
+    vw_skip_runner_seed = False
     if isinstance(vw, dict):
         v = vw.get("server_url", "")
         if isinstance(v, str):
             vw_url = v
+        e = vw.get("email", "")
+        if isinstance(e, str):
+            vw_email = e
+        s = vw.get("skip_admin_seed", False)
+        if isinstance(s, bool):
+            vw_skip_admin_seed = s
+        rs = vw.get("skip_runner_seed", False)
+        if isinstance(rs, bool):
+            vw_skip_runner_seed = rs
 
     # apps.*
     apps_raw = parsed.get("apps", {})
@@ -254,6 +282,9 @@ def load_catalog(path: Path, cluster_name: str) -> Catalog:
         apps=apps,
         ingress_base_domain=base_domain,
         vaultwarden_server_url=vw_url,
+        vaultwarden_email=vw_email,
+        vaultwarden_skip_admin_seed=vw_skip_admin_seed,
+        vaultwarden_skip_runner_seed=vw_skip_runner_seed,
         source_path=path,
     )
 
