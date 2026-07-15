@@ -1949,47 +1949,56 @@ A `make shipped-catalog` Make target runs the script.
     (`rg "^CHART =\|^CHART_VERSION =\|^IMAGE_TAG =" apps/`
     returns zero hits after WP13 lands).
 
-### WP14 — Catalog-only enablement + one-file group additions
+### WP14 — Catalog-only enablement + one-file group additions ✅ (commit pending)
 
 Codifies the cross-cutting policy promises from Goals
 8 and 9 as regression-guard tests.
 
-#### Tests
+#### Tests (8 cases, all green)
 
 - `tests/test_catalog_only_enablement.py` (new):
-  - `test_groups_cannot_reference_disabled_apps`
-    (a `GroupSpec.nodes` entry for an app not in
-    `catalog.enabled_app_names()` raises
-    `CatalogError` at orchestrator startup).
-  - `test_groups_cannot_reference_unknown_apps`
-    (a `GroupSpec.nodes` entry for an app not in
-    `apps.registry` raises `CatalogError`).
-  - `test_catalog_yaml_is_only_enablement_source`
-    (no Python module reads a cluster-level flag
-    outside of `catalog.yaml`; static-check via
-    `rg "enabled.*=.*True" apps/` returns zero hits
-    other than the imports of `catalog.enabled_app_names()`).
-  - `test_group_registration_via_decorator_only`
-    (only `@register_group`-decorated classes in
-    `provisioner/lib/groups/` land in
-    `group_by_name(...)`; the registry raises on
-    duplicates).
-  - `test_new_group_is_one_file`
-    (the `@register_group` decorator fires on module
-    import; `cli.py` force-imports every
-    `provisioner/lib/groups/<name>.py` file via
-    `provisioner/lib/groups/__init__.py`'s `__all__`
-    list; a one-line edit to add a new group is
-    enough).
+  - `test_groups_cannot_reference_disabled_app` —
+    a `CicdStackGroup` whose `nodes` lists `gitea`
+    raises `CatalogError` when the catalog has
+    `gitea: enabled: false`. Pre-apply guard.
+  - `test_groups_cannot_reference_unknown_app` —
+    a synthetic group with `nodes = ("definitely-not-an-app",)`
+    raises `CatalogError` at resolve time. Registry-pinned
+    guard.
+  - `test_catalog_yaml_is_only_enablement_source` —
+    static check across `apps/*.py`: no inline
+    `enabled = True/False` literals. Apps don't
+    peek at cluster-level flags; the catalog is
+    the only enablement source.
+  - `test_catalog_yaml_is_only_enablement_source_in_orchestrator`
+    — companion: orchestrator.py has no `if x.enabled`
+    short-circuits.
+  - `test_group_registration_via_decorator_only` —
+    only `@register_group`-decorated classes land in
+    `all_groups()`. The shipped `cicd-stack` +
+    `default` are both registered.
+  - `test_register_group_rejects_duplicate_name_across_modules`
+    — `ValueError` when a class with the same `name`
+    but a different `__module__`/`__qualname` tries
+    to register.
+  - `test_new_group_is_one_file` — static check on
+    `provisioner/lib/groups/__init__.py`: the two
+    shipped group modules (`cicd_stack`, `default`)
+    are force-imported. A new group file gets the
+    same pattern with a one-line edit.
+  - `test_catalog_loader_rejects_unknown_apps_in_cluster_overlay`
+    — `Catalog.from_shipped_and_cluster` raises
+    CatalogError when the cluster overlay lists an
+    app not in the shipped catalog. Two layers of
+    defense — registry guard at resolve time,
+    catalog loader guard at merge time.
 
 #### Migration
 
-`provisioner/lib/groups/__init__.py` gains a
-`__all__` + explicit imports of every group module,
-mirroring the `apps/__init__.py` shape. The CLI
-side imports `from .lib.groups import ...` once at
-the top of `cli.py`'s force-import block; per-group
-imports go through `__init__`.
+No code change was needed — the shipped
+`provisioner/lib/groups/__init__.py` already has
+the force-imports in place (added with WP2). The
+test pins the contract going forward.
 
 ### WP15 — `AppSpec` → `BaseApp` rename
 
