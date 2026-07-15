@@ -304,21 +304,38 @@ class KubectlRunner:
         command: list[str],
         timeout_s: float = 30.0,
     ) -> subprocess.CompletedProcess[str]:
-        """`kubectl run --rm -i --restart=Never --image=<image> -n <ns> -- <cmd>`.
+        """`kubectl run <name> --rm -i --restart=Never --image=<image> -n <ns> -- <cmd>`.
 
         Spawns a one-shot pod, runs the command, captures the
         output, and the pod auto-deletes (`--rm`). Used by the
         status smoke tests to probe in-cluster Service URLs
         without needing a port-forward.
+
+        Two kubectl quirks this helper navigates:
+
+          * `kubectl run` requires a positional `NAME`
+            (the pod name); it MUST satisfy RFC 1123
+            (lowercase alphanumeric + `-`). Auto-generated
+            pod names use `<NAME>-<rand>` so the suffix is
+            always lowercase.
+          * Without `--command`, the first positional arg
+            after `--` becomes the pod's `containers[0].name`
+            and Kubernetes rejects `/bin/sh` ("lowercase RFC
+            1123 label must consist of ..."). With
+            `--command --`, the first positional is the
+            container's `command:` and the rest are its
+            `args:` — no RFC 1123 collision.
         """
         cmd = self._base_cmd(
             "run",
+            "cicd-smoke",  # pod name; satisfies RFC 1123
             "--rm",
             "-i",
             "--quiet=true",
             "--restart=Never",
             f"--image={image}",
             f"--namespace={namespace}",
+            "--command",
             "--",
             *command,
         )
