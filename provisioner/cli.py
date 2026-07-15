@@ -16,6 +16,7 @@ Exit codes:
    6  destroy failed
    7  status failed
    8  validate failed
+   9  render failed
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ EXIT_APPLY = 5
 EXIT_DESTROY = 6
 EXIT_STATUS = 7
 EXIT_VALIDATE = 8
+EXIT_RENDER = 9
 
 
 def _render_apply_target(
@@ -212,6 +214,27 @@ def main() -> int:
     )
     add_cluster_arg(p_validate)
 
+    p_render = sub.add_parser(
+        "render",
+        help=(
+            "Render merged values for one app (or every "
+            "enabled app) to .proxmox-cicd/rendered/<cluster>/<app>.yaml. "
+            "Read-only inspection — no kubectl/helm calls."
+        ),
+    )
+    add_cluster_arg(p_render)
+    p_render.add_argument(
+        "--app",
+        "-a",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Render a single app (repeat to render "
+            "multiple). Default: every enabled app."
+        ),
+    )
+
     args = parser.parse_args()
 
     # Lazy imports so `cicdctl --help` is fast and never touches
@@ -302,6 +325,8 @@ def main() -> int:
         exit_code = orch.status(args.cluster)
     elif args.command == "validate":
         exit_code = orch.validate(args.cluster)
+    elif args.command == "render":
+        exit_code = orch.render(args.cluster, app_filter=selected)
     else:
         parser.error(f"unknown command: {args.command}")
 

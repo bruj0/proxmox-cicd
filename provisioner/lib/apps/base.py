@@ -721,6 +721,80 @@ class BaseApp(abc.ABC):
     # filename from `default_values_file.stem`.
     _rendered_values_filename: ClassVar[str | None] = None
 
+    def _render_for_apply(
+        self,
+        ctx: Any,
+        cluster_name: str,
+        catalog: dict[str, Any] | None = None,
+    ) -> Path:
+        """Deep-merge shipped defaults + per-cluster
+        overlay for this app; write the result to the
+        WP10 render cache; return the rendered path.
+
+        WP10 — the *new* sibling of `_values_file` /
+        `_rendered_values_file`. Where the WP9 helpers
+        return paths without merging, this helper
+        *performs the merge and writes the file*. The
+        CLI uses it for `cicdctl render`; a future
+        "values-only apply" path can opt in without
+        rewriting the WP9 helpers' contracts.
+
+        Signature:
+
+          * `ctx` is the orchestrator's Container.
+          * `cluster_name` is the cluster the render is
+            for (`catalog.cluster_name` if absent).
+          * `catalog` is the merged per-cluster
+            catalog; the cluster overlay comes from
+            `catalog.apps[self.name].values`. Passed
+            explicitly because the render is runnable
+            outside the apply path (e.g. from `cicdctl
+            render`) which constructs the catalog
+            standalone.
+
+        Output path:
+            <ctx.repo_root>/.proxmox-cicd/rendered/<cluster>/<app>.yaml
+            (canonical formula; see `render_values.render_path`)
+
+        Raises `NoShippedDefaultsError` if both the
+        shipped `default_values` and the per-cluster
+        `values` overlay are empty.
+        """
+        # Lazy import: avoids a circular dep at module
+        # load time (`render_values` imports
+        # `BaseApp`).
+        from ..render_values import render_for_app
+
+        cluster_name = cluster_name or "default"
+        # Pull shipped defaults out of the shipped
+        # catalog. The shipped catalog is shipped with
+        # the codebase under `provisioner/lib/catalog/`.
+        # Use `Path(__file__).resolve()` so the path
+        # is independent of `cwd` and survives tests
+        # that switch the runtime working directory.
+        from ..catalog import load_shipped_catalog
+
+        shipped = load_shipped_catalog(
+            Path(__file__).resolve().parents[1]
+            / "catalog"
+            / "shipped.yaml"
+        )
+        shipped_defaults: dict[str, object] = dict(
+            shipped.apps[self.name].default_values
+        )
+        cluster_overlay: dict[str, object] = {}
+        if catalog and self.name in catalog.get("apps", {}):
+            app_entry = catalog["apps"][self.name]
+            if isinstance(app_entry, dict):
+                cluster_overlay = dict(app_entry.get("values", {}) or {})
+        return render_for_app(
+            app_name=self.name,
+            cluster_name=str(cluster_name),
+            repo_root=Path(ctx.repo_root),
+            shipped_defaults=shipped_defaults,
+            cluster_overlay=cluster_overlay,
+        )
+
     # ----- abstract four-method contract -----
 
     @abc.abstractmethod

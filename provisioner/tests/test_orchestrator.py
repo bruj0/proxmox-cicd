@@ -860,3 +860,98 @@ def _clean_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     importlib.reload(cf_mod)
     yield
     reset_registry()
+
+
+# ----------------------------------------------------------- WP10 render
+
+
+def test_orchestrator_render_writes_rendered_yaml_for_each_enabled_app(
+    tmp_path: Path,
+) -> None:
+    """WP10 — `render` writes one YAML per enabled app
+    under `.proxmox-cicd/rendered/<cluster>/<app>.yaml` when
+    shipped defaults OR a cluster overlay are available.
+    """
+    repo = tmp_path
+    orch, container = _make_orchestrator_with_catalog(
+        tmp_path,
+        "cluster_name: cicd\n"
+        "ingress:\n"
+        "  base_domain: example.net\n"
+        "apps:\n"
+        "  gitea:\n"
+        "    enabled: true\n"
+        "    values:\n"
+        "      gitea:\n"
+        "        admin:\n"
+        "          user: alice\n",
+    )
+    rc = orch.render("cicd")
+    assert rc == 0
+    rendered = (
+        repo / ".proxmox-cicd" / "rendered" / "cicd" / "gitea.yaml"
+    )
+    assert rendered.exists()
+
+
+def test_orchestrator_render_surfaces_no_shipped_defaults(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """WP10 — render MUST NOT silently skip an app with
+    no defaults (no shipped `default_values:` AND no
+    per-cluster overlay); the orchestrator surfaces a
+    `NoShippedDefaultsError` per app via stderr.
+    """
+    orch, _ = _make_orchestrator_with_catalog(
+        tmp_path,
+        "cluster_name: cicd\n"
+        "ingress:\n"
+        "  base_domain: example.net\n"
+        "apps:\n"
+        "  gitea:\n"
+        "    enabled: true\n",
+    )
+    rc = orch.render("cicd")
+    # No app rendered at all → EXIT_RENDER. Errors
+    # surface via stderr before the exit.
+    assert rc == 9
+    err = capsys.readouterr().err
+    assert "gitea" in err
+    assert "shipped defaults" in err or "overlay" in err
+
+
+def test_orchestrator_render_does_not_invoke_helm_or_kubectl(
+    tmp_path: Path,
+) -> None:
+    """WP10 — render is read-only; no helm/kubectl subprocess
+    calls land in the audit log.
+    """
+    orch, container = _make_orchestrator_with_catalog(
+        tmp_path,
+        "cluster_name: cicd\n"
+        "ingress:\n"
+        "  base_domain: example.net\n"
+        "apps:\n"
+        "  gitea:\n"
+        "    enabled: true\n",
+    )
+    orch.render("cicd")
+    # The MagicMock helm+kubectl installed by
+    # `_make_orchestrator_with_catalog` should be untouched.
+    container.helm.upgrade.assert_not_called()
+    container.helm.uninstall.assert_not_called()
+    container.kubectl.run.assert_not_called()
+
+
+def test_orchestrator_render_returns_three_on_missing_catalog(
+    tmp_path: Path,
+) -> None:
+    """WP10 — missing cluster catalog surfaces EXIT_CATALOG=3."""
+    repo = tmp_path
+    repo.mkdir(parents=True, exist_ok=True)
+    container = Container.for_tests(
+        proxmox_k3s_repo=repo, repo_root=repo
+    )
+    orch = Orchestrator(container=container)
+    assert orch.render("cicd") == 3

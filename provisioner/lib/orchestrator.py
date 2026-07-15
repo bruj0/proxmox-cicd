@@ -35,6 +35,7 @@ EXIT_APPLY = 5
 EXIT_DESTROY = 6
 EXIT_STATUS = 7
 EXIT_VALIDATE = 8
+EXIT_RENDER = 9
 
 # Default group when no `--group` is passed on the CLI.
 # The orchestrator intentionally references this string
@@ -166,6 +167,118 @@ class Orchestrator:
         )
         print(f"validate ok: cluster={cluster} apps={catalog.enabled_app_names()}")
         return EXIT_OK
+
+    # ------------------------------------------------------ render
+
+    def render(
+        self,
+        cluster: str,
+        app_filter: list[str] | None = None,
+    ) -> int:
+        """Write merged values YAML for one app (or every
+        enabled app) to the WP10 render cache. Read-only —
+        no kubectl/helm, no apply side effects.
+
+        WP10 — pure read-only inspection. Operators use
+        this to "see what `apply` *would* generate" without
+        actually applying it. The CLI flag plumbing
+        (`--app`) matches `plan`/`apply` so the
+        operator's muscle memory works.
+
+        The render path lives under
+        `.proxmox-cicd/rendered/<cluster>/<app>.yaml`
+        (gitignored). The produced file is the *exact*
+        YAML the orchestrator's apply path would feed to
+        `helm upgrade`. This is the WP10 single source of
+        truth for "what gets sent to helm".
+
+        Exit codes:
+          0  every selected app rendered
+          3  catalog parse failed
+          9  render failed (e.g. an app has no defaults
+             AND no cluster overlay — `NoShippedDefaultsError`)
+        """
+        log = self.container.logger
+        log.info("render.started", cluster=cluster)
+        try:
+            catalog = load_catalog(self._catalog_path(cluster), cluster)
+            validate_enabled_apps_exist(
+                catalog, [a.name for a in all_apps()]
+            )
+        except CatalogError as exc:
+            log.error(
+                "render.catalog_failed",
+                error=str(exc),
+                resolution="fix infra/clusters/<name>/catalog.yaml",
+            )
+            print(f"render failed: {exc}")
+            return EXIT_CATALOG
+
+        names = catalog.enabled_app_names()
+        if app_filter:
+            names = [n for n in names if n in app_filter]
+        # Build the per-app "values overlay" dict for
+        # `_render_for_apply`. The orchestrator reaches
+        # the per-app overlay through `catalog.apps[name].values`
+        # (the post-merge `Catalog` already holds the
+        # merged values per WP1 §5.2; we pass the
+        # per-app slice in so `_render_for_apply` is
+        # cluster-catalog ignorant).
+        catalog_dict: dict[str, object] = {
+            name: {"values": cfg.values}
+            for name, cfg in catalog.apps.items()
+            if name in names
+        }
+
+        rendered: list[Path] = []
+        errors: list[str] = []
+        from .render_values import NoShippedDefaultsError
+
+        for name in names:
+            app_cls = next(
+                (a for a in all_apps() if a.name == name), None
+            )
+            if app_cls is None:
+                continue
+            try:
+                instance = app_cls()
+                path = instance._render_for_apply(
+                    self.container,
+                    cluster_name=cluster,
+                    catalog={"apps": catalog_dict},
+                )
+                rendered.append(path)
+            except NoShippedDefaultsError as exc:
+                errors.append(f"{name}: {exc}")
+            except (NotImplementedError, RuntimeError) as exc:
+                # Apps that don't ship default_values at all
+                # (e.g. apps with chart-default-only values)
+                # get a clear, non-fatal skip. The orchestrator
+                # surfaces every error to the operator so a
+                # silent miss is impossible.
+                errors.append(f"{name}: {exc}")
+
+        print(
+            f"render ok: cluster={cluster} "
+            f"rendered={len(rendered)} errors={len(errors)}"
+        )
+        for p in rendered:
+            print(f"  -> {p}")
+        for msg in errors:
+            print(f"  ! {msg}", file=sys.stderr)
+        log.info(
+            "render.finished",
+            cluster=cluster,
+            apps=names,
+            rendered=len(rendered),
+            errors=len(errors),
+            result="ok" if not errors else "partial",
+        )
+        # Partial render is still a render — operators want
+        # the per-app errors surfaced, NOT an exit-code 9
+        # that hides them. EXIT_RENDER is reserved for
+        # catalog/parse failures.
+        return EXIT_OK if rendered else EXIT_RENDER
 
     # ------------------------------------------------------ plan
 

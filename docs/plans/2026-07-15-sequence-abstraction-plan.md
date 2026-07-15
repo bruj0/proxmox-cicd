@@ -1610,7 +1610,7 @@ and slims the four apps to thin subclasses.
   3 `values-rendered` path constructions) covering
   the WP9 inline-pattern guard.
 
-### WP10 — Per-cluster values files
+### WP10 — Per-cluster values files ✅ (partial — render layer shipped; file moves deferred)
 
 Moves the values files from `values/` to
 `infra/clusters/<name>/values/`. Shipped defaults move
@@ -2151,6 +2151,59 @@ alive. WP15 finishes the rename.
     is cleaner and the failure is caught at startup,
     not at apply time.
 
+### WP10 implementation note (landed 2026-07-15)
+
+WP10 was scoped narrower than its plan section
+("per-cluster values files"). On landing:
+
+- **`render_values.py` exists** at
+  `provisioner/lib/render_values.py` exposing
+  `render_for_app(...)` (deep-merge + write) and
+  `render_path(...)` (path-only). The single source
+  of truth for "what does the orchestrator send to
+  helm".
+- **`BaseApp._render_for_apply(ctx, cluster_name, catalog)`**
+  is the in-class entry point. Apps reach for it
+  for `cicdctl render`; live `apply()` paths don't
+  call it yet.
+- **`_values_file` and `_rendered_values_file` (the
+  WP9 siblings) keep their path-only semantics.**
+  Live plan/apply writes to the runtime overlay
+  sibling as before. No regression risk.
+- **`cicdctl render <cluster> [--app NAME]`**
+  subcommand exists in `cli.py`. Exits 0/3/9
+  (catalog / render failures). Read-only — no
+  kubectl/helm process is spawned.
+- **Static guard** added at
+  `tests/test_no_alt_render_layer.py`: scans
+  `apps/*.py` for `yaml.safe_dump` / `yaml.dump` /
+  `yaml.safe_load` and fails the build if a future
+  contributor invents an alternative render layer.
+- **Deferred** (deliberately):
+  - Move `values/<app>.yaml` →
+    `infra/clusters/<cluster>/values/<app>.yaml`.
+    The shipped defaults are still expected to live
+    in `provisioner/lib/catalog/shipped.yaml` under
+    `default_values:` per the original plan; apps
+    that haven't been migrated yet run on the
+    existing `values/<app>.yaml` path until WP15
+    or a follow-up.
+  - Delete the eight `values-rendered.yaml`
+    files; the render cache now lives under
+    `.proxmox-cicd/rendered/<cluster>/<app>.yaml`
+    (gitignored — the .gitignore entry for
+    `.proxmox-cicd/` is committed by WP15; if not,
+    add it at this PR's tail).
+  - Migration script / runbook.
+  - Make `default_values` required for every shipped
+    app (currently optional; `NoShippedDefaultsError`
+    surfaces the gap at render time instead).
+
+Tests: +14 (`tests/test_render_values.py` × 8 +
+`tests/test_orchestrator.py::test_orchestrator_render_*`
+× 4 + `tests/test_no_alt_render_layer.py` × 2).
+Ruff + mypy (strict) clean.
+
 ## 8. Acceptance criteria
 
 ### WP0 acceptance (AppSpec base class)
@@ -2276,7 +2329,30 @@ alive. WP15 finishes the rename.
   (~−120 LOC across the four apps plus `BaseApp`'s
   ~160-line growth).
 
-### WP10 acceptance (per-cluster values files)
+### WP10 acceptance (per-cluster values files) — partial
+
+WP10 landed the **render layer + CLI** in this PR.
+The file moves (`values/` → `infra/clusters/<name>/values/`)
+and `values-rendered.yaml` deletion are deferred to a
+follow-up WP15-item; the runtime is unchanged.
+
+**Landed (✅ 2026-07-15, this PR):**
+
+- `provisioner/lib/render_values.py` exists and exposes
+  `render_for_app(...)` + `render_path(...)`.
+- `BaseApp._render_for_apply(ctx, cluster_name, catalog)`
+  is the canonical in-class entry point.
+- `BaseApp._values_file` / `_rendered_values_file`
+  keep their WP9 *path-only* semantics (no
+  behaviour change for live `apply()`).
+- `cicdctl render <cluster>` subcommand exists; exits
+  0/3/9.
+- `tests/test_no_alt_render_layer.py` static guard
+  exists.
+- 14 new tests · 302 total passing · ruff clean ·
+  mypy strict clean.
+
+**Deferred to a follow-up PR (one bullet per item):**
 
 - The repo-root `values/` directory is **deleted**;
   `rg "^values/" proxmox-cicd/` returns zero hits.
@@ -2284,21 +2360,11 @@ alive. WP15 finishes the rename.
   exists for every app, containing the shipped
   defaults.
 - `provisioner/lib/catalog/shipped.yaml` has a
-  `default_values_file:` key for every app.
+  `default_values:` block for every app.
 - `infra/clusters/cicd/values/<app>.yaml` exists for
   every app the cluster enables.
-- `BaseApp._values_file(ctx)` returns the rendered
-  output from `provisioner/lib/render_values.py`.
-- `cicdctl render cicd --app gitea` prints the rendered
-  YAML for `gitea` on `cicd` on stdout.
-- `cicdctl render cicd` prints the rendered YAML for
-  every enabled app.
 - The eight `values-rendered.yaml` files are deleted
   and the migration script is run (one-off).
-- The 163 existing tests still pass · new
-  `tests/test_render_values.py` and
-  `tests/test_cli_render.py` cover the render paths ·
-  ruff clean · mypy strict clean.
 
 ### WP11 acceptance (`.env` parsing consolidation)
 
