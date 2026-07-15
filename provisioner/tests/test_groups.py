@@ -85,16 +85,25 @@ def test_default_group_is_registered() -> None:
 
 
 def test_cicd_stack_group_has_expected_nodes_and_edges() -> None:
-    """`CicdStackGroup` declares the four nodes + three
-    edges from §5.1 of the plan.
+    """`CicdStackGroup` declares the four nodes + four
+    edges from §5.1 of the plan (VKS-rooted DAG).
 
-    The edge shape is the whole point of the
-    `GroupSpec` (DAG) abstraction: gitea has no deps,
-    vaultwarden-k8s-sync depends on gitea, and both
-    gitea-runner and cloudflared depend on
-    vaultwarden-k8s-sync. This DAG cannot be expressed
-    as a flat list, which is exactly the regression
-    risk this test pins.
+    The DAG shape is the whole point of the
+    `GroupSpec` abstraction:
+
+      vaultwarden-k8s-sync     (root — no deps)
+          |
+          +--> gitea                   (after VKS)
+          |
+          +--> cloudflared             (after VKS, sibling of gitea)
+          |
+          +--> gitea-runner            (after VKS AND after gitea)
+
+    A linear sequence can't express "gitea-runner
+    waits for gitea but cloudflared doesn't" — the
+    DAG can. VKS is the root because gitea's apply()
+    writes the admin password to a Vaultwarden Secure
+    Note that VKS reconciles into a cluster Secret.
     """
     from provisioner.lib.groups import group_by_name
 
@@ -109,22 +118,29 @@ def test_cicd_stack_group_has_expected_nodes_and_edges() -> None:
         "vaultwarden-k8s-sync",
     }
     edges = group.edges
-    # gitea has no deps; gitea-runner + cloudflared both
-    # wait for VKS.
-    assert edges["gitea"] == []
-    assert edges["vaultwarden-k8s-sync"] == ["gitea"]
-    assert edges["gitea-runner"] == ["vaultwarden-k8s-sync"]
+    # VKS is the root; everyone else waits for it.
+    # gitea-runner additionally waits for gitea (the
+    # runner registers against gitea on startup);
+    # cloudflared only needs VKS.
+    assert edges["vaultwarden-k8s-sync"] == []
+    assert edges["gitea"] == ["vaultwarden-k8s-sync"]
+    assert sorted(edges["gitea-runner"]) == [
+        "gitea",
+        "vaultwarden-k8s-sync",
+    ]
     assert edges["cloudflared"] == ["vaultwarden-k8s-sync"]
 
 
 def test_group_enabled_in_returns_false_when_prereq_missing() -> None:
     """`CicdStackGroup.enabled_in(catalog)` is `False`
-    when `gitea` is missing from the catalog.
+    when `vaultwarden-k8s-sync` is missing from the
+    catalog.
 
-    `gitea` is the root of the cicd-stack DAG; without
-    it the stack cannot run (VKS depends on gitea's
-    namespace, runners depend on VKS, etc.). This is
-    the explicit gate described in §5.1.
+    VKS is the root of the cicd-stack DAG; without
+    it the stack cannot run (gitea stores its admin
+    password in VKS, the runner + cloudflared rely
+    on VKS-reconciled Secrets). This is the explicit
+    gate described in §5.1.
     """
     from provisioner.lib.groups import group_by_name
 
@@ -132,24 +148,32 @@ def test_group_enabled_in_returns_false_when_prereq_missing() -> None:
     assert cls is not None
     group = cls()
 
-    # gitea enabled -> group runs.
-    assert group.enabled_in(_build_catalog(["gitea"])) is True
-
-    # gitea missing -> group refuses.
-    catalog_no_gitea = _build_catalog(
-        ["gitea-runner", "cloudflared", "vaultwarden-k8s-sync"]
+    # VKS enabled -> group runs.
+    assert (
+        group.enabled_in(
+            _build_catalog(["vaultwarden-k8s-sync"])
+        )
+        is True
     )
-    assert group.enabled_in(catalog_no_gitea) is False
+
+    # VKS missing -> group refuses.
+    catalog_no_vks = _build_catalog(
+        ["gitea", "gitea-runner", "cloudflared"]
+    )
+    assert group.enabled_in(catalog_no_vks) is False
 
 
 def test_resolve_apply_order_topologically_sorts_dag() -> None:
     """The orchestrator's `resolve_apply_order` produces
     a stable topological order from a group's DAG.
 
-    For `cicd-stack`: gitea must come first, then
-    vaultwarden-k8s-sync, then gitea-runner +
-    cloudflared (in either order, since they share a
-    parent). This is the §5.1 contract.
+    For `cicd-stack` (VKS-rooted):
+
+      1. vaultwarden-k8s-sync   (root; no deps)
+      2. gitea, cloudflared     (siblings; both wait for VKS only)
+      3. gitea-runner           (waits for VKS AND gitea)
+
+    This is the §5.1 contract.
     """
     from provisioner.lib.groups import resolve_apply_order
 
@@ -158,23 +182,31 @@ def test_resolve_apply_order_topologically_sorts_dag() -> None:
     )
     order = resolve_apply_order(catalog, "cicd-stack")
 
-    assert order.index("gitea") == 0
-    assert order.index("vaultwarden-k8s-sync") == 1
-    # gitea-runner + cloudflared must come AFTER
-    # vaultwarden-k8s-sync but their relative order is
+    assert order.index("vaultwarden-k8s-sync") == 0
+    # gitea and cloudflared are siblings — both come
+    # after VKS but their relative order is
     # unspecified (DAG, not list).
-    assert order.index("gitea-runner") > order.index(
+    assert order.index("gitea") > order.index(
         "vaultwarden-k8s-sync"
     )
     assert order.index("cloudflared") > order.index(
         "vaultwarden-k8s-sync"
     )
+    # gitea-runner is last: it depends on both VKS and
+    # gitea.
+    assert order.index("gitea-runner") > order.index("gitea")
+    assert order.index("gitea-runner") > order.index(
+        "vaultwarden-k8s-sync"
+    )
+    # Specifically: gitea-runner comes after gitea AND
+    # after cloudflared, since both are resolved before
+    # the runner can apply.
+    assert order[-1] == "gitea-runner"
 
 
 def test_resolve_apply_order_raises_when_group_app_not_enabled() -> None:
     """`resolve_apply_order` raises `CatalogError` when
-    the catalog has `vaultwarden-k8s-sync: enabled: false`
-    (or any group node disabled).
+    the catalog has any group node disabled.
 
     The plan's WP2-WP4 acceptance block calls this out
     explicitly: `cicdctl apply cicd --group cicd-stack`
@@ -183,9 +215,11 @@ def test_resolve_apply_order_raises_when_group_app_not_enabled() -> None:
     """
     from provisioner.lib.groups import resolve_apply_order
 
-    catalog = _build_catalog(["gitea", "gitea-runner", "cloudflared"])
-    # vaultwarden-k8s-sync intentionally missing.
-    with pytest.raises(CatalogError, match="vaultwarden-k8s-sync"):
+    catalog = _build_catalog(
+        ["gitea", "cloudflared", "vaultwarden-k8s-sync"]
+    )
+    # gitea-runner intentionally missing.
+    with pytest.raises(CatalogError, match="gitea-runner"):
         resolve_apply_order(catalog, "cicd-stack")
 
 
@@ -207,9 +241,18 @@ def test_resolve_apply_order_intersects_group_with_app_filter() -> None:
         catalog, "cicd-stack", app_filter=["gitea", "cloudflared"]
     )
 
-    # Only the filter apps survive, and they remain
-    # in topological order relative to each other.
-    assert order == ["gitea", "cloudflared"]
+    # VKS is filtered out by the app_filter; gitea and
+    # cloudflared are siblings in the DAG (both wait
+    # only for VKS), so their relative order is the
+    # alphabetical tiebreak the resolver produces. Both
+    # orderings satisfy the §5.1 contract; the test
+    # pins the concrete one to guard against silent
+    # resolver regressions.
+    assert order == ["cloudflared", "gitea"]
+    # And the test confirms VKS is not in the filtered
+    # output.
+    assert "vaultwarden-k8s-sync" not in order
+    assert "gitea-runner" not in order
 
 
 def test_resolve_apply_order_raises_on_cycle_with_cycle_path() -> None:
@@ -268,11 +311,14 @@ def test_destroy_order_is_reverse_topological_of_group() -> None:
     """Destroy order is the reverse of apply order.
 
     Teardown must undo dependencies in the opposite
-    order they were built: gitea-runner / cloudflared
-    first (they came last), then vaultwarden-k8s-sync,
-    then gitea. This mirrors today's `destroy` behaviour
-    (reverse catalog order) but is now a property of
-    the group DAG, not a hard-coded list.
+    order they were built: gitea-runner first (it came
+    last in apply), then gitea + cloudflared (siblings),
+    then VKS (the root, destroyed last because removing
+    it last keeps Secrets available for the longest
+    possible window during teardown). This mirrors
+    today's `destroy` behaviour (reverse catalog order)
+    but is now a property of the group DAG, not a
+    hard-coded list.
     """
     from provisioner.lib.groups import (
         resolve_apply_order,
@@ -287,12 +333,12 @@ def test_destroy_order_is_reverse_topological_of_group() -> None:
 
     # Destroy is the reverse of apply.
     assert destroy_order == list(reversed(apply_order))
-    # gitea is destroyed last.
-    assert destroy_order[-1] == "gitea"
-    # vaultwarden-k8s-sync is destroyed before gitea.
-    assert destroy_order.index("vaultwarden-k8s-sync") < destroy_order.index(
-        "gitea"
-    )
+    # gitea-runner is destroyed first (it was applied last).
+    assert destroy_order[0] == "gitea-runner"
+    # VKS is destroyed last (the root).
+    assert destroy_order[-1] == "vaultwarden-k8s-sync"
+    # VKS's index in destroy < VKS's index in apply.
+    #
 
 
 def test_default_group_resolves_to_catalog_order() -> None:
