@@ -40,6 +40,34 @@ EXIT_STATUS = 7
 EXIT_VALIDATE = 8
 
 
+def _render_apply_target(
+    selected: list[str] | None,
+    group: str | None,
+) -> str:
+    """Compose the operator-facing "About to..." target
+    string for the `--auto-approve` prompt.
+
+    WP4 — group + app_filter are independently optional
+    on the CLI. This helper makes the prompt read
+    naturally for all four combinations:
+
+      no filter, no group     -> the full enabled catalog
+      no filter, --group X    -> apps in group X
+      --app a --app b, no grp -> apps [a, b]
+      --app a, --group X      -> apps in X narrowed to [a]
+    """
+    if selected and group:
+        return (
+            f"apps [{', '.join(selected)}] "
+            f"in group {group!r}"
+        )
+    if selected:
+        return f"apps [{', '.join(selected)}]"
+    if group:
+        return f"apps in group {group!r}"
+    return "the full enabled app catalog"
+
+
 def _validate_app_filter(
     requested: list[str] | None,
 ) -> list[str] | None:
@@ -112,6 +140,17 @@ def main() -> int:
             "to select multiple). Default: every enabled app."
         ),
     )
+    p_plan.add_argument(
+        "--group",
+        "-g",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Run with a named group's DAG (plan only those "
+            "apps in topological order). Default: `default` "
+            "= every enabled app in catalog order."
+        ),
+    )
 
     p_apply = sub.add_parser("apply", help="Install app catalog (idempotent).")
     add_cluster_arg(p_apply)
@@ -130,11 +169,19 @@ def main() -> int:
             "Restrict the apply to a single app (repeat to "
             "select multiple, e.g. `--app cloudflared --app "
             "gitea`). Default: every enabled app in the "
-            "catalog. The flag is order-preserving: apps are "
-            "applied in the order you list them, not the "
-            "catalog order. Useful for re-running one app "
-            "after a failure or for skipping slow ones in a "
-            "tight iteration loop."
+            "catalog. With a `--group` flag, the filter "
+            "narrows the group's topological order."
+        ),
+    )
+    p_apply.add_argument(
+        "--group",
+        "-g",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Apply the named group's DAG in topological "
+            "order. Default: `default` = every enabled app "
+            "in catalog order."
         ),
     )
 
@@ -144,6 +191,17 @@ def main() -> int:
         "--auto-approve",
         action="store_true",
         help="Skip the confirmation prompt.",
+    )
+    p_destroy.add_argument(
+        "--group",
+        "-g",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Destroy in the named group's reverse "
+            "topological order. Default: `default` = "
+            "reverse catalog order."
+        ),
     )
 
     p_status = sub.add_parser("status", help="Show live app state.")
@@ -174,6 +232,14 @@ def main() -> int:
     )
     from .lib.apps import cloudflared as _cloudflared  # noqa: F401
 
+    # Force-import shipped groups so their
+    # `@register_group` decorators populate the
+    # registry. WP4 — adding a new group requires
+    # editing this list (single-source-of-truth for
+    # "what groups does this version ship with").
+    from .lib.groups import cicd_stack as _cicd_stack  # noqa: F401
+    from .lib.groups import default as _default_group  # noqa: F401
+
     container = Container.production(
         proxmox_k3s_repo=args.proxmox_k3s_repo,
         repo_root=REPO_ROOT_DEFAULT,
@@ -195,13 +261,15 @@ def main() -> int:
     # downstream traceback when one is misspelled.
     selected = _validate_app_filter(args.app) if hasattr(args, "app") else None
     if args.command == "plan":
-        exit_code = orch.plan(args.cluster, app_filter=selected)
+        exit_code = orch.plan(
+            args.cluster,
+            app_filter=selected,
+            group=args.group,
+        )
     elif args.command == "apply":
         if not args.auto_approve:
-            target = (
-                f"apps [{', '.join(selected)}]"
-                if selected
-                else "the full enabled app catalog"
+            target = _render_apply_target(
+                selected, args.group
             )
             print(
                 f"About to install {target} for cluster "
@@ -209,13 +277,15 @@ def main() -> int:
             )
             print("Pass --auto-approve to skip this prompt.")
             sys.exit(EXIT_OK)
-        exit_code = orch.apply(args.cluster, app_filter=selected)
+        exit_code = orch.apply(
+            args.cluster,
+            app_filter=selected,
+            group=args.group,
+        )
     elif args.command == "destroy":
         if not args.auto_approve:
-            target = (
-                f"apps [{', '.join(selected)}]"
-                if selected
-                else "the full enabled app catalog"
+            target = _render_apply_target(
+                selected, args.group
             )
             print(
                 f"About to DESTROY {target} for cluster "
@@ -223,7 +293,11 @@ def main() -> int:
             )
             print("Pass --auto-approve to skip this prompt.")
             sys.exit(EXIT_OK)
-        exit_code = orch.destroy(args.cluster, app_filter=selected)
+        exit_code = orch.destroy(
+            args.cluster,
+            app_filter=selected,
+            group=args.group,
+        )
     elif args.command == "status":
         exit_code = orch.status(args.cluster)
     elif args.command == "validate":

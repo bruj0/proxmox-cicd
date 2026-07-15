@@ -104,48 +104,11 @@ _ADMIN_PASSWORD_ALPHABET = (
     string.ascii_letters + string.digits + "!@#%^*_+-=."
 )
 
-# The Gateway/HTTPRoute manifests live next to this module. They
-# are pure templated YAML; no substitution is needed at apply time.
-GATEWAY_MANIFEST = """\
----
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  name: gitea
-  namespace: {namespace}
-  labels:
-    app.kubernetes.io/name: gitea
-spec:
-  gatewayClassName: envoy
-  listeners:
-    - name: http
-      port: 80
-      protocol: HTTP
-      allowedRoutes:
-        namespaces:
-          from: Same
----
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: gitea
-  namespace: {namespace}
-  labels:
-    app.kubernetes.io/name: gitea
-spec:
-  parentRefs:
-    - name: gitea
-  hostnames:
-    - {host}
-  rules:
-    - matches:
-        - path:
-            type: PathPrefix
-            value: /
-      backendRefs:
-        - name: gitea-http
-          port: 3000
-"""
+# The Gateway/HTTPRoute manifests live in
+# `apps/templates/gitea/gateway.yaml` (WP5 —
+# moved out of the inline `GATEWAY_MANIFEST`
+# constant). The template uses `string.Template`
+# syntax (`${var}`), not f-string syntax.
 
 
 class GiteaApp(BaseApp):
@@ -314,8 +277,11 @@ class GiteaApp(BaseApp):
         # kubectl (so tests can mock it; production gets the
         # real KubectlRunner bound to the sibling proxmox-k3s
         # kubeconfig). kubectl was already built in step 1b.
-        manifest = GATEWAY_MANIFEST.format(
-            namespace=NAMESPACE, host=host
+        # WP5: the manifest now lives in
+        # `apps/templates/gitea/gateway.yaml`; rendered via
+        # `_render_template` with `${namespace}` + `${host}`.
+        manifest = self._render_template(
+            "gateway.yaml", namespace=NAMESPACE, host=host
         )
         apply_result = kubectl.apply(
             manifest=manifest, namespace=NAMESPACE, server_side=True

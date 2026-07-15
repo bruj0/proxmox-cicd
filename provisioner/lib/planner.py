@@ -26,12 +26,20 @@ class PlanDiff:
     skipped: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
-    def render(self) -> str:
+    def render(self, group: str = "default") -> str:
         """Render the plan to a human-readable string for
         `cicdctl plan cicd`. The operator reads this top-to-
         bottom before deciding to apply.
+
+        WP3 — `group` is the resolved group name
+        (from `--group` on the CLI, or `default` if
+        unset). Rendered as a single line under the
+        header so the operator knows which DAG ran.
         """
-        lines = [f"Plan for cluster {self.cluster_name!r}:"]
+        lines = [
+            f"Plan for cluster {self.cluster_name!r}:",
+            f"  Group: {group}",
+        ]
         if self.errors:
             lines.append("")
             lines.append("  ERRORS:")
@@ -64,6 +72,7 @@ def build_plan(
     cluster_name: str,
     catalog_path: Path,
     app_filter: list[str] | None = None,
+    group: str = "default",
 ) -> PlanDiff:
     """Build a PlanDiff from the catalog + registered apps.
 
@@ -79,34 +88,45 @@ def build_plan(
     provided, the filter is checked against the registry
     first so a misspelled name surfaces as a catalog error
     instead of a silent empty plan.
+
+    WP3 — `group` is the resolved group name. The
+    planner iterates apps in the group's topological
+    order (intersected with `app_filter` and the
+    catalog's enabled set). Unknown group names
+    surface as `CatalogError` via
+    `resolve_apply_order`.
     """
     catalog = load_catalog(catalog_path, cluster_name)
     validate_enabled_apps_exist(catalog, [a.name for a in all_apps()])
 
     registry = {a.name: a for a in all_apps()}
-    enabled = catalog.enabled_app_names()
     catalog_dict = catalog.as_dict()
 
+    # WP3: resolve which apps to plan via the groups
+    # resolver. The default group is the sentinel
+    # "every enabled app in catalog order". An
+    # `app_filter` narrows the result. Unknown group
+    # names raise `CatalogError` (`resolve_apply_order`
+    # in groups/__init__.py).
+    from .groups import resolve_apply_order
+
+    enabled = resolve_apply_order(
+        catalog, group, app_filter
+    )
+
+    # Filter validation: a filter name not in the
+    # registry is a typo; a filter name in the
+    # registry but not in the group's resolved order
+    # is a disabled app. The group resolver already
+    # raises CatalogError for unknown groups, but we
+    # also want the registry-typo path to surface.
     if app_filter is not None:
-        # Validate the filter names against the registry.
-        # `enabled_app_names` is a subset of registry names;
-        # a filter name not in the registry is a typo. A
-        # filter name in the registry but not in the enabled
-        # set is a disabled app — surface that as an error
-        # rather than silently skipping.
         for name in app_filter:
             if name not in registry:
                 raise CatalogError(
-                    f"--app {name!r} is not a registered app; "
-                    f"known: {sorted(registry.keys())}"
+                    f"--app {name!r} is not a registered "
+                    f"app; known: {sorted(registry.keys())}"
                 )
-            if name not in enabled:
-                raise CatalogError(
-                    f"--app {name!r} is registered but not "
-                    f"enabled in the catalog for cluster "
-                    f"{cluster_name!r}"
-                )
-        enabled = app_filter
 
     plan = PlanDiff(cluster_name=cluster_name)
     for name in enabled:

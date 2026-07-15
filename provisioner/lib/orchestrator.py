@@ -21,6 +21,10 @@ from typing import Any
 from .apps import AppApplyResult, all_apps
 from .catalog import Catalog, CatalogError, load_catalog, validate_enabled_apps_exist
 from .container import Container
+from .groups import (
+    resolve_apply_order as groups_resolve_apply_order,
+    resolve_destroy_order as groups_resolve_destroy_order,
+)
 from .output_writer import write_apps_json
 from .planner import build_plan
 
@@ -31,6 +35,12 @@ EXIT_APPLY = 5
 EXIT_DESTROY = 6
 EXIT_STATUS = 7
 EXIT_VALIDATE = 8
+
+# Default group when no `--group` is passed on the CLI.
+# The orchestrator intentionally references this string
+# by constant rather than re-typing it everywhere so
+# future renames happen in one place (see §5.5).
+DEFAULT_GROUP = "default"
 
 
 @dataclass
@@ -58,39 +68,56 @@ class Orchestrator:
     @staticmethod
     def _resolve_apply_order(
         catalog: Catalog,
+        group_name: str,
         app_filter: list[str] | None,
         log: Any,
+        *,
+        inverse: bool = False,
     ) -> list[str]:
         """Decide which apps to iterate, in what order.
 
-        `None` (the default, no `--app` flag) means
-        "every enabled app, sorted alphabetically by
-        catalog order" (which is what the catalog
-        returns).
+        WP3 — groups are the third input alongside
+        `catalog` and `app_filter`. The flow is:
 
-        A non-empty `app_filter` is treated as the
-        authoritative order (operator-typed order, not
-        alphabetical). We still validate that every
-        filter entry is enabled in the catalog — a
-        typo or a disabled app surfaces here as a
-        CatalogError instead of silently no-op'ing.
+          1. `groups.resolve_apply_order` (or
+             `resolve_destroy_order` for teardown)
+             topologically sorts the group's DAG
+             against `catalog.enabled_app_names()`.
+          2. The `app_filter` is intersected with the
+             result, preserving topological order.
+
+        Empty `app_filter` is preserved end-to-end so
+        callers can pass `None` (= "every app in the
+        group's apply order").
+
+        `inverse=True` flips the resolver to
+        `resolve_destroy_order` so the call site can
+        share one helper between apply and destroy.
+
+        The audit log gets one event per resolution so
+        an operator reading the log can see exactly
+        which group + filter was applied. The
+        `event_name` parameter chooses between
+        `apply.group_resolved` and
+        `destroy.group_resolved`.
         """
-        if not app_filter:
-            return catalog.enabled_app_names()
-        enabled = set(catalog.enabled_app_names())
-        for name in app_filter:
-            if name not in enabled:
-                raise CatalogError(
-                    f"--app {name!r} is registered but not "
-                    f"enabled in the catalog (enabled: "
-                    f"{sorted(enabled)})"
-                )
+        if inverse:
+            order = groups_resolve_destroy_order(
+                catalog, group_name, app_filter
+            )
+            event_name = "destroy.group_resolved"
+        else:
+            order = groups_resolve_apply_order(
+                catalog, group_name, app_filter
+            )
+            event_name = "apply.group_resolved"
         log.info(
-            "apply.app_filter_resolved",
-            requested=app_filter,
-            applied=app_filter,
+            event_name,
+            group_name=group_name,
+            nodes=order,
+            app_filter=app_filter or [],
         )
-        return app_filter
+        return order
 
     # ------------------------------------------------------ validate
 
@@ -142,13 +169,20 @@ class Orchestrator:
 
     # ------------------------------------------------------ plan
 
-    def plan(self, cluster: str, app_filter: list[str] | None = None) -> int:
+    def plan(
+        self,
+        cluster: str,
+        app_filter: list[str] | None = None,
+        group: str | None = None,
+    ) -> int:
         log = self.container.logger
         log.info(
             "plan.started",
             cluster=cluster,
             app_filter=app_filter,
+            group=group,
         )
+        group_name = group or DEFAULT_GROUP
         try:
             self._set_cluster_env(cluster)
             plan_diff = build_plan(
@@ -156,6 +190,7 @@ class Orchestrator:
                 cluster,
                 self._catalog_path(cluster),
                 app_filter=app_filter,
+                group=group_name,
             )
         except CatalogError as exc:
             log.error(
@@ -171,8 +206,9 @@ class Orchestrator:
             errors=plan_diff.errors,
             apps=len(plan_diff.rows),
             skipped=plan_diff.skipped,
+            group=group_name,
         )
-        print(plan_diff.render())
+        print(plan_diff.render(group=group_name))
         return EXIT_OK if not plan_diff.errors else EXIT_PLAN
 
     # ------------------------------------------------------ apply
@@ -181,12 +217,15 @@ class Orchestrator:
         self,
         cluster: str,
         app_filter: list[str] | None = None,
+        group: str | None = None,
     ) -> int:
         log = self.container.logger
+        group_name = group or DEFAULT_GROUP
         log.info(
             "apply.started",
             cluster=cluster,
             app_filter=app_filter,
+            group=group_name,
         )
         try:
             self._set_cluster_env(cluster)
@@ -194,8 +233,39 @@ class Orchestrator:
             validate_enabled_apps_exist(
                 catalog, [a.name for a in all_apps()]
             )
+            # WP3: validate `--app` filter names
+            # against the registry first. A typo
+            # (e.g. `--app gete` instead of `--app
+            # gitea`) should surface as a clear
+            # catalog error rather than silently
+            # no-op'ing. The groups resolver only
+            # knows about apps in the catalog;
+            # registry-typo detection has to live in
+            # the orchestrator's apply path.
+            #
+            # Also: a filter name that's registered
+            # but disabled in the catalog should also
+            # surface as a clear catalog error rather
+            # than silently 0-app apply.
+            if app_filter is not None:
+                registered = {a.name for a in all_apps()}
+                enabled = set(catalog.enabled_app_names())
+                for name in app_filter:
+                    if name not in registered:
+                        raise CatalogError(
+                            f"--app {name!r} is not a "
+                            f"registered app; known: "
+                            f"{sorted(registered)}"
+                        )
+                    if name not in enabled:
+                        raise CatalogError(
+                            f"--app {name!r} is "
+                            f"registered but not enabled "
+                            f"in the cluster catalog "
+                            f"(enabled: {sorted(enabled)})"
+                        )
             apply_order = self._resolve_apply_order(
-                catalog, app_filter, log
+                catalog, group_name, app_filter, log
             )
         except CatalogError as exc:
             log.error(
@@ -311,12 +381,15 @@ class Orchestrator:
         self,
         cluster: str,
         app_filter: list[str] | None = None,
+        group: str | None = None,
     ) -> int:
         log = self.container.logger
+        group_name = group or DEFAULT_GROUP
         log.info(
             "destroy.started",
             cluster=cluster,
             app_filter=app_filter,
+            group=group_name,
         )
         try:
             self._set_cluster_env(cluster)
@@ -324,8 +397,17 @@ class Orchestrator:
             validate_enabled_apps_exist(
                 catalog, [a.name for a in all_apps()]
             )
-            destroy_order = self._resolve_apply_order(
-                catalog, app_filter, log
+            if app_filter is not None:
+                registered = {a.name for a in all_apps()}
+                for name in app_filter:
+                    if name not in registered:
+                        raise CatalogError(
+                            f"--app {name!r} is not a "
+                            f"registered app; known: "
+                            f"{sorted(registered)}"
+                        )
+            ordered = self._resolve_apply_order(
+                catalog, group_name, app_filter, log, inverse=True
             )
         except CatalogError as exc:
             log.error(
@@ -336,12 +418,11 @@ class Orchestrator:
             print(f"destroy failed: {exc}")
             return EXIT_CATALOG
 
-        # Destroy in reverse registration order so dependents
-        # (gitea-runner) are removed before their dependencies
-        # (gitea). When `--app` narrows the set, reverse that
-        # subset instead so the relative ordering within the
-        # filter is preserved.
-        ordered = list(reversed(destroy_order))
+        # `ordered` is already in destroy order
+        # (reverse-topological of the group's DAG).
+        # When no group is named, the DefaultGroup
+        # sentinel returns `reversed(catalog_order)`,
+        # which mirrors today's behaviour.
         registry = {a.name: a for a in all_apps()}
         for name in ordered:
             app_cls = registry.get(name)

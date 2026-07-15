@@ -42,10 +42,24 @@ SOLID notes:
 from __future__ import annotations
 
 import abc
+import re
+from pathlib import Path
+from string import Template
 from typing import TYPE_CHECKING, Any, ClassVar
 
 if TYPE_CHECKING:
     from . import AppApplyResult, AppPlanResult, AppStatus
+
+
+class TemplateNotFoundError(FileNotFoundError):
+    """Raised when `BaseApp._render_template` can't
+    locate the requested template file.
+
+    Subclassing `FileNotFoundError` lets existing
+    `try/except OSError` blocks catch it without a new
+    branch; the operator-facing message includes the
+    app name + the relative path so it's grep-able.
+    """
 
 
 class BaseApp(abc.ABC):
@@ -158,6 +172,76 @@ class BaseApp(abc.ABC):
     @release.setter
     def release(self, value: str) -> None:
         object.__setattr__(self, "_release_override", value)
+
+    # ----- template rendering (WP5) -----
+
+    @property
+    def template_dir(self) -> Path:
+        """Directory where the app's YAML templates live.
+
+        WP5 — each app has a sibling directory under
+        `provisioner/lib/apps/templates/<app_name>/`
+        holding the YAML files the app substitutes
+        into. The default location is computed from
+        the module path; subclasses can override by
+        assigning `_template_dir_override` or
+        overriding the property.
+        """
+        return Path(__file__).resolve().parent / "templates" / self.name
+
+    def _render_template(self, name: str, **vars: Any) -> str:
+        """Read `templates/<name>`, run it through
+        `string.Template.safe_substitute(**vars)`, return
+        the rendered string.
+
+        WP5 — moves inlined YAML manifest blocks out
+        of `apps/*.py` into real files.
+        Templates use `$var` / `${var}` syntax so YAML
+        values that contain literal `{` / `}` (RBAC,
+        JSONata, regex) don't fight Python format
+        strings.
+
+        Unrendered variables raise `KeyError` after the
+        pass so we don't ship invalid YAML to kubectl
+        (a silent miss in `safe_substitute` would be a
+        production outage). Unused kwargs are silently
+        dropped, so callers can splat `**catalog` and
+        ignore the noise.
+
+        `$$` renders as a literal `$` for values that
+        need currency / regex characters.
+        """
+        path = self.template_dir / name
+        if not path.exists():
+            raise TemplateNotFoundError(
+                f"app {self.name!r} has no template at "
+                f"{path}. Add the YAML file or fix the "
+                f"app's _render_template call."
+            )
+        rendered = Template(path.read_text(encoding="utf-8")).safe_substitute(
+            vars
+        )
+        # Detect unrendered placeholders (either
+        # `${var}` or bare `$var`) left behind because
+        # a kwarg was missing. This is the
+        # silent-failure case `safe_substitute` would
+        # otherwise produce.
+        unrendered = re.search(
+            r"\$\{[^}]+\}|(?<!\$)\$(?!\$)([A-Za-z_][A-Za-z0-9_]*)",
+            rendered,
+        )
+        if unrendered:
+            var_name = (
+                unrendered.group(1)
+                if unrendered.group(1)
+                else unrendered.group(0).strip("${}")
+            )
+            raise KeyError(
+                f"template {path} references ${var_name} "
+                f"but no value was supplied. Pass "
+                f"{var_name!r} as a kwarg."
+            )
+        return rendered
 
     # ----- abstract four-method contract -----
 
