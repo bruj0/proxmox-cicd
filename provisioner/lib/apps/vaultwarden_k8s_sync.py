@@ -57,7 +57,7 @@ REPO_NAME = "vaultwarden-kubernetes-secrets"
 
 
 class VaultwardenK8sSyncApp(BaseApp):
-    """AppSpec for VaultwardenK8sSync (VKS)."""
+    """BaseApp for VaultwardenK8sSync (VKS)."""
 
     name = "vaultwarden-k8s-sync"
     namespace = "vaultwarden-kubernetes-secrets"

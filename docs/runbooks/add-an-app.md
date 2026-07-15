@@ -28,7 +28,7 @@ Ingress MUST go through Gateway API (the chart's own
 apply your own `Gateway` + `HTTPRoute` via
 `KubectlRunner.apply`, like the gitea app does).
 
-### 3. Write the AppSpec
+### 3. Write the BaseApp
 
 Create `provisioner/lib/apps/harbor.py`. Minimum:
 
@@ -40,7 +40,7 @@ from typing import Any
 from provisioner.lib.container import Container
 from provisioner.lib.kubectl_runner import KubectlRunner
 from provisioner.lib.apps import (
-    AppApplyResult, AppPlanResult, AppSpec, AppStatus, register
+    AppApplyResult, AppPlanResult, BaseApp, AppStatus, register
 )
 
 CHART = "oci://goharbor/harbor-helm"

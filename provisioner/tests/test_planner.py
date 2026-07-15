@@ -19,7 +19,7 @@ The tests cover:
     `(no apps selected)` after the group header.
   * `PlanDiff.render()` includes the per-app
     install/apply/note lines emitted by each
-    `AppSpec.plan()`.
+    `BaseApp.plan()`.
 """
 
 from __future__ import annotations

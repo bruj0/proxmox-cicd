@@ -1,9 +1,9 @@
-"""apps — AppSpec protocol + @register decorator.
+"""apps — BaseApp ABC + @register decorator.
 
 This package contains the SOLID seam between the orchestrator
 (everything app-agnostic) and the per-app implementations
 (everything app-specific). Adding a new app is a one-file
-change: create apps/<name>.py with an AppSpec subclass
+change: create apps/<name>.py with a BaseApp subclass
 decorated by `@register`. The orchestrator discovers it via
 import-time side effects.
 """
@@ -12,17 +12,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
 from collections.abc import Callable
 
-from ..container import Container
 from ..log import StructuredLogger
 from .base import BaseApp
 
 
 @dataclass
 class AppPlanResult:
-    """What `AppSpec.plan()` returns: a diff summary suitable
+    """What `BaseApp.plan()` returns: a diff summary suitable
     for `cicdctl plan cicd` to print to the operator.
     """
 
@@ -34,7 +32,7 @@ class AppPlanResult:
 
 @dataclass
 class AppApplyResult:
-    """What `AppSpec.apply()` returns: the audit-log-friendly
+    """What `BaseApp.apply()` returns: the audit-log-friendly
     summary of what was actually done.
 
     `next_step` is the operator-facing follow-up message:
@@ -57,7 +55,7 @@ class AppApplyResult:
 
 @dataclass
 class AppStatus:
-    """What `AppSpec.status()` returns: the live state for
+    """What `BaseApp.status()` returns: the live state for
     `cicdctl status cicd`.
     """
 
@@ -70,27 +68,26 @@ class AppStatus:
     notes: list[str] = field(default_factory=list)
 
 
-@runtime_checkable
-class AppSpec(Protocol):
-    """Legacy Protocol kept for backward compatibility with
-    code that type-narrows `app_by_name(...)` results.
-
-    WP0 replaces this with `BaseApp` (a real `abc.ABC`).
-    `AppSpec` is preserved as a `Protocol` so existing
-    `isinstance(x, AppSpec)` runtime checks in conftest.py
-    keep working during the migration; new code should
-    use `BaseApp` directly.
-    """
-
-    name: str
-
-    def plan(self, ctx: Container, catalog: dict[str, Any]) -> AppPlanResult: ...
-
-    def apply(self, ctx: Container, catalog: dict[str, Any]) -> AppApplyResult: ...
-
-    def destroy(self, ctx: Container, catalog: dict[str, Any]) -> None: ...
-
-    def status(self, ctx: Container, catalog: dict[str, Any]) -> AppStatus: ...
+# ----- Backward-compat alias -----
+#
+# WP15 — `AppSpec` was the legacy Protocol that WP0
+# replaced with `BaseApp`. Tests had `isinstance(x, AppSpec)`
+# runtime checks; third-party type-narrowing used
+# `Protocol` semantics. Keep `AppSpec` as a bare alias
+# for `BaseApp` so:
+#
+#   * `isinstance(x, AppSpec)` keeps working (now it's
+#     a real ABC subclass check — strictly stronger
+#     than the old runtime Protocol check).
+#   * `from provisioner.lib.apps import AppSpec` keeps
+#     working for code written against the WP0-pre
+#     surface.
+#
+# A ruff `forbidden-name` rule + a static guard
+# (`tests/test_apps_no_appspec_refs.py`) block new
+# `AppSpec` references in app code. The alias below is
+# the one allowed site.
+AppSpec = BaseApp
 
 
 # ----- registry -----

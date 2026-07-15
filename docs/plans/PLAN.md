@@ -86,7 +86,7 @@ Each app is **isolated in its own namespace**, has its own
 `values.yaml`, and registers itself through a small **app
 registry** (`provisioner/lib/apps/registry.py`) keyed by app
 name. To add or remove an app, the operator edits one
-`AppSpec` in the registry — nothing else needs to change
+`BaseApp` in the registry — nothing else needs to change
 (open/closed).
 
 ### 2.1 Why these three apps, in this order
@@ -142,12 +142,12 @@ provisioner/
     ├── kubeconfig_loader.py -- reads proxmox-k3s/infra/clusters/<name>/kubeconfig.yaml
     ├── output_writer.py   -- writes infra/clusters/<name>/apps.json
     ├── planner.py         -- live-state-vs-desired diff
-    ├── protocols.py       -- Protocols (AppSpec, ClusterTopology, SecretsSource, ...)
+    ├── protocols.py       -- Protocols (BaseApp, ClusterTopology, SecretsSource, ...)
     ├── container.py       -- DI: Container.production() / Container.for_tests()
     └── apps/
-        ├── __init__.py    -- AppSpec protocol + @register decorator
+        ├── __init__.py    -- BaseApp protocol + @register decorator
         ├── registry.py    -- auto-discovers every @register'ed app at import
-        ├── base.py        -- AppSpec ABC + result dataclasses
+        ├── base.py        -- BaseApp ABC + result dataclasses
         ├── gitea.py
         ├── gitea_runner.py
         └── bitwarden_sm.py
@@ -167,13 +167,13 @@ namespace to the registry's namespace list, done. The
 orchestrator, the planner, the helm_runner, and the
 existing apps all stay the same.
 
-**L — Liskov Substitution.** Every `AppSpec` subclass
+**L — Liskov Substitution.** Every `BaseApp` subclass
 honors the same 4-method contract: `plan()`, `apply()`,
 `status()`, `destroy()`. The orchestrator can swap any
 registered app for any other (e.g. for a `--dry-run`
 pass).
 
-**I — Interface Segregation.** `AppSpec` only exposes the
+**I — Interface Segregation.** `BaseApp` only exposes the
 4 methods the orchestrator needs. The actual
 implementation is free to define private helpers
 (`_render_values()`, `_probes()`, `_bw_secret_cr()`).
@@ -369,11 +369,11 @@ proxmox-cicd/
 │       ├── kubeconfig_loader.py
 │       ├── output_writer.py
 │       ├── planner.py
-│       ├── protocols.py      -- AppSpec, ClusterTopology, ...
+│       ├── protocols.py      -- BaseApp, ClusterTopology, ...
 │       ├── container.py      -- DI: Container.production() / Container.for_tests()
 │       └── apps/
-│           ├── __init__.py    -- AppSpec protocol + @register decorator
-│           ├── base.py        -- AppSpec ABC + result dataclasses
+│           ├── __init__.py    -- BaseApp protocol + @register decorator
+│           ├── base.py        -- BaseApp ABC + result dataclasses
 │           ├── registry.py    -- auto-discovers every @register'ed app
 │           ├── gitea.py
 │           ├── gitea_runner.py
@@ -469,7 +469,7 @@ Acceptance:
   values_file, namespace)` runs `helm upgrade --install
   <release> <chart> --version <v> -n <ns> -f <values>`.
 
-### WP3 — AppSpec protocol + registry + base + first app (gitea)
+### WP3 — BaseApp protocol + registry + base + first app (gitea)
 
 Files: `provisioner/lib/apps/__init__.py`,
 `provisioner/lib/apps/base.py`,

@@ -1,4 +1,4 @@
-"""WP3 tests — AppSpec protocol, registry, GiteaApp."""
+"""WP3 tests — BaseApp protocol, registry, GiteaApp."""
 
 from __future__ import annotations
 

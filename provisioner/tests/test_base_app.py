@@ -149,7 +149,7 @@ def test_register_rejects_non_baseapp_class() -> None:
     is not a `BaseApp` subclass. The decorator surfaces
     the wrong shape as a `TypeError`, not a silent drop."""
 
-    class NotAnApp:  # no BaseApp, no AppSpec, nothing.
+    class NotAnApp:  # no BaseApp, no BaseApp, nothing.
         name = "not-an-app"
 
     with pytest.raises(TypeError, match="must subclass BaseApp"):

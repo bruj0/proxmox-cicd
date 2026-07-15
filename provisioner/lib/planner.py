@@ -3,7 +3,7 @@
 Mirrors proxmox-k3s/provisioner/lib/planner.py in spirit but
 is much smaller: the apps catalog has no infrastructure-level
 state (no VMs, no kube cluster), only helm releases + CRDs.
-Each AppSpec implements `plan()` itself; the orchestrator's
+Each BaseApp implements `plan()` itself; the orchestrator's
 planner just collects and prints them.
 """
 

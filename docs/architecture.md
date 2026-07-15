@@ -62,7 +62,7 @@ flowchart TB
 Every `apps/<name>.py` file owns exactly one app: its
 values, its required-namespace, its probes, its BitwardenSecret
 dependencies. The orchestrator owns nothing app-specific —
-it loops over the AppSpec registry and calls
+it loops over the BaseApp registry and calls
 `.plan()` / `.apply()` / `.destroy()` / `.status()`.
 
 The same principle extends to two cross-cutting packages:
@@ -112,7 +112,7 @@ for app-specific imports and asserts there are none.
 
 ### L — Liskov Substitution
 
-Every `AppSpec` subclass honors the same 4-method contract:
+Every `BaseApp` subclass honors the same 4-method contract:
 
 ```python
 def plan(self, ctx: Container, catalog: dict) -> AppPlanResult
@@ -126,7 +126,7 @@ The orchestrator can swap any registered app for any other
 
 ### I — Interface Segregation
 
-`AppSpec` only exposes the 4 methods the orchestrator needs.
+`BaseApp` only exposes the 4 methods the orchestrator needs.
 The actual implementation is free to define private helpers
 (`_render_values()`, `_probes()`, `_bw_secret_cr()`).
 
@@ -142,14 +142,14 @@ both runners.
 
 ```python
 # provisioner/lib/apps/__init__.py
-_REGISTRY: dict[str, type[AppSpec]] = {}
+_REGISTRY: dict[str, type[BaseApp]] = {}
 
-def register(cls: type[AppSpec]) -> type[AppSpec]:
+def register(cls: type[BaseApp]) -> type[BaseApp]:
     """Decorator: register cls in the global app registry."""
     _REGISTRY[cls.name] = cls
     return cls
 
-def all_apps() -> tuple[type[AppSpec], ...]:
+def all_apps() -> tuple[type[BaseApp], ...]:
     return tuple(_REGISTRY.values())
 ```
 

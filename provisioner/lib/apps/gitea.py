@@ -110,7 +110,7 @@ _ADMIN_PASSWORD_ALPHABET = (
 
 
 class GiteaApp(BaseApp):
-    """AppSpec for the Gitea chart."""
+    """BaseApp for the Gitea chart."""
 
     name = "gitea"
     namespace = "gitea"

@@ -100,7 +100,7 @@ for the full setup recipe.
 
 ## What the provisioner does
 
-The `vaultwarden_k8s_sync.AppSpec.apply()`
+The `vaultwarden_k8s_sync.BaseApp.apply()`
 method in
 [`provisioner/lib/apps/vaultwarden_k8s_sync.py`](../provisioner/lib/apps/vaultwarden_k8s_sync.py)
 orchestrates the install:

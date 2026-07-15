@@ -3,7 +3,7 @@
 Mirrors proxmox-k3s/provisioner/tests/conftest.py in spirit
 (small, in-memory fakes), but the fixtures are tailored to
 the app-catalog use case: the unit under test is an
-`AppSpec`, not a `Phase`.
+`BaseApp`, not a `Phase`.
 """
 
 from __future__ import annotations

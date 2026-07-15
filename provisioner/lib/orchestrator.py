@@ -7,7 +7,7 @@ state JSON, no PVE API calls, no SSH. Just catalog -> apps.
 
 App-specific imports live in `apps/__init__.py` via the
 `@register` decorator; the orchestrator only knows the
-`AppSpec` protocol.
+`BaseApp` protocol.
 """
 
 from __future__ import annotations

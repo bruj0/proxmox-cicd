@@ -543,7 +543,7 @@ def test_orchestrator_destroy_writes_nothing_and_uninstalls(tmp_path: Path) -> N
 
 
 def test_orchestrator_does_not_import_app_specific_symbols() -> None:
-    """Open/Closed proof: the orchestrator imports AppSpec
+    """Open/Closed proof: the orchestrator imports BaseApp
     (the protocol) but never a concrete app class. Adding a
     4th app shouldn't require touching orchestrator.py.
     """
@@ -553,7 +553,7 @@ def test_orchestrator_does_not_import_app_specific_symbols() -> None:
 
     src = inspect.getsource(orch_mod)
     # The only thing the orchestrator should reference from
-    # the apps package is the AppSpec Protocol + AppApplyResult
+    # the apps package is the BaseApp Protocol + AppApplyResult
     # dataclass (used as a type hint) + all_apps registry.
     # No `from .apps.gitea` / `from .apps.gitea_runner` /
     # `from .apps.vaultwarden_k8s_sync` imports.

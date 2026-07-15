@@ -159,7 +159,7 @@ VW_SKIP_FLAG = "skip_runner_seed"
 
 
 class GiteaRunnerApp(BaseApp):
-    """AppSpec for the gitea-runner chart."""
+    """BaseApp for the gitea-runner chart."""
 
     name = "gitea-runner"
     namespace = "gitea-runner"

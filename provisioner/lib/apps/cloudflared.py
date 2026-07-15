@@ -234,7 +234,7 @@ _MIN_TOKEN_LIFETIME_S = 24 * 3600
 
 
 class CloudflaredApp(BaseApp):
-    """AppSpec for the cloudflared tunnel (remotely-managed)."""
+    """BaseApp for the cloudflared tunnel (remotely-managed)."""
 
     name = "cloudflared"
     namespace = "cloudflared"

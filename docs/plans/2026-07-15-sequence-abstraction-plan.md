@@ -2000,7 +2000,7 @@ No code change was needed — the shipped
 the force-imports in place (added with WP2). The
 test pins the contract going forward.
 
-### WP15 — `AppSpec` → `BaseApp` rename
+### WP15 — `AppSpec` → `BaseApp` rename ✅ (landed 2026-07-15)
 
 WP0 shipped `BaseApp` but kept `AppSpec` Protocol
 alive. WP15 finishes the rename.
@@ -2182,6 +2182,44 @@ lands on the canonical tests.
 
 Tests: +3 (`test_orchestrator_regression_guards.py`).
 305 total passing. Ruff + mypy (strict) clean.
+
+### WP15 implementation note (landed 2026-07-15)
+
+WP15 closed the rename loop opened by WP0:
+
+  * `provisioner/lib/apps/__init__.py` — the
+    `@runtime_checkable` `AppSpec(Protocol)` block is
+    deleted. Replaced with a bare alias:
+    `AppSpec = BaseApp`. The alias is re-exported in
+    `__all__` for backward compat with tests that
+    `from provisioner.lib.apps import AppSpec`.
+  * Mechanical rename (`sed -i 's/\bAppSpec\b/BaseApp/g'`)
+    across `apps/*.py`, `tests/*.py`, `lib/orchestrator.py`,
+    `lib/planner.py`, plus active docs
+    (`docs/architecture.md`, `docs/runbooks/add-an-app.md`,
+    `docs/vaultwarden-sync.md`, `docs/plans/PLAN.md`).
+  * Dead imports (`typing.Protocol`, `runtime_checkable`,
+    `Container`, `typing.Any`) dropped from
+    `apps/__init__.py`; `StructuredLogger` retained (used by
+    `_make_logger_sink`).
+
+Regression guards:
+
+  * `tests/test_apps_no_appspec_refs.py` (1 test) —
+    AST-based scan that fails the build on any
+    `AppSpec` reference outside the single alias
+    line in `apps/__init__.py`. Docstrings are exempt
+    so the alias's own docstring (which references
+    `AppSpec` for explanation) doesn't trip the
+    scanner.
+  * The plan also called for a `ruff` `forbidden-name`
+    rule; ruff's TOML schema doesn't expose a
+    `forbidden-name` key directly, so the lint-time
+    guard is the AST test (which runs in CI the same
+    way `ruff check` does).
+
+Tests: +1 (test_apps_no_appspec_refs.py).
+316 total passing. Ruff + mypy (strict) clean.
 
 ### WP12 implementation note (landed 2026-07-15)
 
@@ -2507,7 +2545,7 @@ follow-up WP15-item; the runtime is unchanged.
 - The 163 existing tests still pass · ruff clean ·
   mypy strict clean.
 
-### WP15 acceptance (AppSpec → BaseApp rename)
+### WP15 acceptance (AppSpec → BaseApp rename) — met ✅ 2026-07-15
 
 - `provisioner/lib/apps/__init__.py` declares
   `AppSpec = BaseApp` as the only remaining reference
@@ -2517,13 +2555,21 @@ follow-up WP15-item; the runtime is unchanged.
   `apps/__init__.py`.
 - The `ruff` rule
   (`[tool.ruff.lint] forbidden-name = ["AppSpec"]`)
-  is configured and active.
+  is the plan's preferred lint-time guard; ruff's
+  current schema doesn't expose a top-level
+  `forbidden-name` key, so the lint-time guard is
+  the AST-based static test
+  (`test_apps_no_appspec_refs`) which runs in CI
+  the same way `ruff check` does. The AST guard
+  is the strict equivalent of the planned ruff
+  rule.
 - The `AppSpec = BaseApp` alias is documented in the
   deprecation comment: "kept for backward compat;
   new code uses BaseApp".
 - The 163 existing tests still pass · new
-  `tests/test_app_rename.py` covers the rename ·
-  ruff clean · mypy strict clean.
+  `tests/test_apps_no_appspec_refs.py` (AST-based
+  static guard) covers the rename · ruff clean ·
+  mypy strict clean.
 
 ## 9. Effort estimate
 

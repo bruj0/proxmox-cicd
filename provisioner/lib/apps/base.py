@@ -1,6 +1,6 @@
 """apps/base — BaseApp ABC + the four-method contract.
 
-WP0 of the GroupSpec plan replaces the `AppSpec` Protocol
+WP0 of the GroupSpec plan replaces the `BaseApp` Protocol
 with a real `abc.ABC` subclass. Every app (`gitea`,
 `gitea-runner`, `cloudflared`, `vaultwarden-k8s-sync`)
 inherits from `BaseApp`. Apps stop being
@@ -8,7 +8,7 @@ inherits from `BaseApp`. Apps stop being
 subclasses that declare `name` as a class attribute and
 override only `plan` / `apply` / `destroy` / `status`.
 
-Why an ABC instead of the previous `AppSpec` Protocol:
+Why an ABC instead of the previous `BaseApp` Protocol:
 
   * `@abstractmethod` enforces the four-method contract at
     class-creation time. A misspelled `apply()` becomes
@@ -64,7 +64,7 @@ class TemplateNotFoundError(FileNotFoundError):
 
 
 class BaseApp(abc.ABC):
-    """The base class every AppSpec inherits.
+    """The base class every BaseApp inherits.
 
     Subclasses MUST:
 
