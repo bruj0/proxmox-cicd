@@ -169,8 +169,7 @@ class GiteaRunnerApp(BaseApp):
     image_version = "1.0.8-dind"
     default_values_file = "values/gitea-runner.yaml"
 
-    def _values_file(self, ctx: Container) -> Path:
-        return ctx.repo_root / self.default_values_file
+    # `_values_file` is inherited from `BaseApp` (WP9).
 
     def _chart_dir(self, ctx: Container) -> Path:
         return ctx.repo_root / "infra" / "charts" / "gitea-runner"

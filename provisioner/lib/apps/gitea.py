@@ -120,20 +120,21 @@ class GiteaApp(BaseApp):
     image_version = "1.26.x"
     default_values_file = "values/gitea.yaml"
 
-    def _values_file(self, ctx: Container) -> Path:
-        return ctx.repo_root / self.default_values_file
-
-    def _hostname(self, catalog: dict[str, Any]) -> str:
-        ingress = catalog.get("ingress", {})
-        base = ingress.get("base_domain", "example.net")
-        return f"gitea.{base}"
+    # `_values_file` and `_hostname` are inherited from
+    # `BaseApp` (WP9). Pre-WP9 each shipped app declared
+    # its own private `_values_file` (returning
+    # `ctx.repo_root / <module-level constant>`) and
+    # `_hostname` (returning `<app_name>.<base>`).
+    # Centralizing both on `BaseApp` means a new app
+    # inherits the canonical behaviour for free and a
+    # future change to the format updates every app at
+    # once.
 
     def plan(
         self, ctx: Container, catalog: dict[str, Any]
     ) -> AppPlanResult:
         host = self._hostname(catalog)
-        values = self._values_file(ctx)
-        rendered_values = values.parent / f"{values.stem}.values-rendered.yaml"
+        rendered_values = self._rendered_values_file(ctx)
         return AppPlanResult(
             app_name=self.name,
             would_install=[
@@ -202,9 +203,7 @@ class GiteaApp(BaseApp):
         #     OAuth/email/webhook links) and PROTOCOL (the
         #     in-pod listener scheme) are deliberately
         #     decoupled.
-        rendered_values = (
-            values.parent / f"{values.stem}.values-rendered.yaml"
-        )
+        rendered_values = self._rendered_values_file(ctx)
         rendered_values.parent.mkdir(parents=True, exist_ok=True)
         # Read committed defaults; overlay hostname. We
         # deliberately rewrite the full file rather than

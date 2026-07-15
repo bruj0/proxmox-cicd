@@ -1515,54 +1515,100 @@ for this deployment.
   returns `ctx.kubectl` (regression guard against future
   apps re-introducing kubeconfig handling).
 
-### WP9 — Code deduplication deep sweep (`BaseApp`)
+### WP9 — Code deduplication deep sweep (`BaseApp`) ✅ (commit pending)
 
 Moves the second-wave helpers (see §5.7) into `BaseApp`
 and slims the four apps to thin subclasses.
 
-#### Helpers added to `apps/base.py`
+#### Helpers added to `apps/base.py` (shipped)
 
-- `_secret_ref(name, key)` → `SecretKeySelector`
-- `_hostname(catalog)` → `f"{name}.{base_domain}"`
-- `_labels()` / `_annotations()` → standard set
-- `_image_tag` / `_chart_version` → read from shipped catalog
-- `_deep_merge(a, b)` → dict.update recursive helper
+- `_secret_ref(name, key)` → `SecretKeySelector` shape
+  (`{"secretKeyRef": {"name": ..., "key": ...}}`).
+  Apps don't call it today (no inline
+  `SecretKeySelector(...)` constructions existed at
+  WP9 start) but it's the canonical helper going
+  forward — WP12 (Vaultwarden helpers) uses it.
+- `_hostname(catalog)` → `f"{self.name}.{base_domain}"`
+  (default `example.net`). Replaces the per-app
+  overrides on `GiteaApp` + `CloudflaredApp`. The
+  cloudflared override had a pre-existing bug —
+  it returned `gitea.<base>` regardless of the
+  app's name. WP9 fixes that by deriving the host
+  from `self.name`.
+- `_labels()` / `_annotations()` → canonical set
+  (`app.kubernetes.io/name`, `app.kubernetes.io/managed-by`).
+- `_deep_merge(a, b)` → recursive merge. Lifted from
+  `catalog._deep_merge` so the merge logic lives in
+  exactly one place; `catalog._deep_merge` is now a
+  thin wrapper that delegates to `BaseApp._deep_merge`.
+- `_values_file(ctx)` → `ctx.repo_root / self.default_values_file`.
+  Replaces the four per-app `_values_file` overrides
+  that read `ctx.repo_root / DEFAULT_VALUES_FILE`.
+- `_rendered_values_file(ctx)` → rendered sibling
+  path next to the committed file. Default filename
+  is `<default_values_file-stem>.values-rendered.yaml`;
+  apps without a committed values file (cloudflared,
+  today) declare `_rendered_values_filename` to
+  override the literal name. Replaces the per-app
+  rendered-path construction in `gitea` +
+  `cloudflared` + `vaultwarden_k8s_sync._render_values`.
 
-#### App refactor (4 apps × ~30 minutes)
+#### App refactor (shipped, 4 apps)
 
-Each app gets a one-time sweep:
-
-1. Replace inline `SecretKeySelector(...)` with
-   `self._secret_ref(...)`.
-2. Replace inline hostname computation with
-   `self._hostname(catalog)`.
-3. Replace inline labels/annotations with
-   `super()._labels() | { ... }`.
-4. Replace inline chart/image constants with
-   `self.chart_version` / `self.image_tag`.
-5. Delete now-unused imports.
+  * `GiteaApp` — dropped private `_values_file` and
+    `_hostname` (now inherited).
+  * `CloudflaredApp` — dropped private `_hostname`
+    (was buggy: returned `gitea.<base>`); added
+    `_rendered_values_filename =
+    "cloudflare-tunnel-remote.values-rendered.yaml"`.
+  * `GiteaRunnerApp` — dropped private `_values_file`.
+  * `VaultwardenK8sSyncApp._render_values` — kept as
+    the canonical site for the inline
+    `<stem>.values-rendered.yaml` literal (it's the
+    one allowed exception in the static guard; no
+    `ctx` is available so `_rendered_values_file`
+    can't be used).
 
 #### Migration verification
 
-A single `rg "SecretKeySelector\(" apps/` returns zero
-hits after WP9 lands. A second `rg "values-rendered" apps/`
-also returns zero hits (no app constructs its own values
-file path anymore).
+  * The static guard
+    `tests/test_apps_no_inline_wp9_patterns.py`
+    catches both forms:
+      * direct `SecretKeySelector(` literal — apps
+        must use `self._secret_ref(...)`.
+      * inline `values-rendered.yaml` path
+        construction — apps must use
+        `self._rendered_values_file(ctx)` (or, for
+        the VKS `_render_values` static helper, the
+        one allowed inline site).
+  * The delegation test
+    `tests/test_catalog_delegates_deep_merge.py`
+    pins `catalog._deep_merge` to delegate to
+    `BaseApp._deep_merge`; drift between the two
+    trips the build.
 
-#### Tests
+#### Tests (new)
 
-- `tests/test_base_app_helpers.py` (new):
+- `tests/test_base_app_helpers.py` — 12 cases:
   - `test_secret_ref_returns_expected_kubernetes_object`
   - `test_hostname_uses_base_domain_from_catalog`
+  - `test_hostname_defaults_to_example_net`
   - `test_labels_includes_managed_by_and_app_name`
+  - `test_annotations_includes_managed_by`
   - `test_deep_merge_overrides_left_keys`
   - `test_deep_merge_preserves_unset_left_subkeys`
-- A lint-style test that scans `apps/*.py` and fails
-  the build if any inline `SecretKeySelector(`,
-  `values-rendered`, `chart_version = "`, or
-  `image_tag = "` patterns remain. Implemented via
-  `pytest -k "test_apps_have_no_inline_secrets"` reading
-  the apps directory.
+  - `test_deep_merge_does_not_mutate_inputs`
+  - `test_deep_merge_replaces_non_dict_with_dict`
+  - `test_values_file_returns_repo_root_default`
+  - `test_values_file_uses_default_when_no_class_attr`
+  - `test_rendered_values_file_sibling_to_default`
+- `tests/test_catalog_delegates_deep_merge.py` —
+  6 parametrized cases pinning `catalog._deep_merge`
+  to delegate to `BaseApp._deep_merge`.
+- `tests/test_apps_no_inline_wp9_patterns.py` —
+  4 parametrized cases (1 `SecretKeySelector` +
+  3 `values-rendered` path constructions) covering
+  the WP9 inline-pattern guard.
 
 ### WP10 — Per-cluster values files
 
@@ -1833,7 +1879,7 @@ the four apps**.
   fails the build if `apps/*.py` imports `VaultwardenClient`
   directly. After WP12 only `apps/base.py` imports it.
 
-### WP13 — Chart/image/version constants as class attributes ✅ (commit pending)
+### WP13 — Chart/image/version constants as class attributes ✅ (0da7d07)
 
 Module-level constants become class attributes read
 from the shipped catalog.

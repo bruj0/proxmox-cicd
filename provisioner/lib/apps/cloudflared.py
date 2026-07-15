@@ -253,6 +253,13 @@ class CloudflaredApp(BaseApp):
     chart = "infra/helm-charts/cloudflare-tunnel-remote-0.1.2.tgz"
     chart_version = "0.1.2"
     image_version = "2024.8.3"
+    # WP9 — cloudflared doesn't ship a committed values
+    # file; the rendered values is the *only* values
+    # input to `helm upgrade`. Override the rendered
+    # filename to match the helm release name (which is
+    # `cloudflare-tunnel-remote`, distinct from the
+    # app's `name`/`release`).
+    _rendered_values_filename = "cloudflare-tunnel-remote.values-rendered.yaml"
 
     # `_kubectl` is inherited from `BaseApp` (WP6). Apps
     # used to each roll a private loader here; centralizing
@@ -260,10 +267,15 @@ class CloudflaredApp(BaseApp):
     # same boot path (with `ctx.kubectl` short-circuit and
     # a single error message for missing kubeconfig).
 
-    def _hostname(self, catalog: dict[str, Any]) -> str:
-        ingress = catalog.get("ingress", {})
-        base = ingress.get("base_domain", "example.net")
-        return f"gitea.{base}"
+    # `_hostname` is inherited from `BaseApp` (WP9).
+    # Pre-WP9, cloudflared overrode `_hostname` to return
+    # `f"gitea.{base}"` regardless of the app's name —
+    # a bug carried over from the gitea-only origin of
+    # the codebase. The default on `BaseApp` derives the
+    # host from `self.name`, so the now-correct answer is
+    # `cloudflared.<base>`. Apps that need a
+    # non-`name`-based host still override; cloudflared
+    # doesn't.
 
     # ---------- .env parsing ----------
     #
@@ -1244,7 +1256,7 @@ class CloudflaredApp(BaseApp):
         # character interpretation. Inside the quoted
         # string, single quotes are doubled per YAML 1.2
         # quoting rules.
-        rendered_values = ctx.repo_root / "values" / "cloudflared-tunnel-remote.values-rendered.yaml"
+        rendered_values = self._rendered_values_file(ctx)
         rendered_values.parent.mkdir(parents=True, exist_ok=True)
         token_quoted = "'" + tunnel_token.replace("'", "''") + "'"
         rendered_values.write_text(

@@ -100,6 +100,14 @@ class BaseApp(abc.ABC):
     # time, not at instantiation time.
     name: ClassVar[str]
 
+    # WP9 — apps that ship a default values file declare
+    # the repo-root-relative path here (e.g.
+    # `"values/gitea.yaml"`). Apps without a values file
+    # leave this unset; `_values_file` then raises
+    # `NotImplementedError`. Default is `None` so the
+    # attribute is always readable.
+    default_values_file: ClassVar[str | None] = None
+
     # ----- init-subclass gate -----
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
@@ -463,6 +471,255 @@ class BaseApp(abc.ABC):
         runner = KubectlRunner(kubeconfig=kubeconfig, logger=ctx.logger)
         ctx.kubectl = runner
         return runner
+
+    # ----- identity + manifest helpers (WP9) -----
+
+    def _secret_ref(self, name: str, key: str) -> dict[str, Any]:
+        """Build a k8s-style `valueFrom.secretKeyRef`
+        block for stamping into manifests the app
+        generates at apply() time.
+
+        WP9 — apps that need to inject a Secret value
+        into a Deployment (a pre-WP11 ad-hoc pattern,
+        now standardised) build the block via this
+        helper. The shape matches what kubectl
+        expects:
+
+            valueFrom:
+              secretKeyRef:
+                name: <name>
+                key: <key>
+
+        Apps can splat the result directly into the
+        parent block:
+
+            env:
+              - name: ADMIN_PASSWORD
+                valueFrom: {app._secret_ref(
+                    "gitea-admin-password", "password"
+                )["secretKeyRef" and ...]}
+
+        The wrapper at `valueFrom:` is up to the
+        caller — this helper produces the inner
+        `secretKeyRef:` shape plus a `valueFrom:`
+        wrapper for the common one-arg case:
+
+            >>> gitea._secret_ref("gitea-admin-password", "password")
+            {"secretKeyRef": {"name": "...", "key": "..."}}
+
+        Future WP12 (Vaultwarden helpers) uses this
+        helper to stamp Secret refs onto generated
+        manifests.
+        """
+        return {
+            "secretKeyRef": {
+                "name": name,
+                "key": key,
+            }
+        }
+
+    def _hostname(self, catalog: dict[str, Any]) -> str:
+        """The hostname the app answers on inside the
+        cluster.
+
+        WP9 — default shape is
+        `f"{self.name}.{base_domain}"`, where
+        `base_domain` is read from
+        `catalog["ingress"]["base_domain"]` (with
+        a fallback to `"example.net"`).
+
+        Before WP9 each shipped app had its own
+        `_hostname` method:
+
+            def _hostname(self, catalog):
+                ingress = catalog.get("ingress", {})
+                base = ingress.get("base_domain", "example.net")
+                return f"{app_name}.{base}"
+
+        The four copies were identical except
+        cloudflared's, which returned `gitea.<base>`
+        regardless of the app — a pre-existing bug
+        masked by the lack of a test. WP9 deletes the
+        overrides; the canonical helper on `BaseApp`
+        derives the host from `self.name` so a new
+        app shipped under a different `name` doesn't
+        inherit the bug.
+
+        Apps that need a non-`name`-based host
+        override this helper:
+
+            class CloudflareTunnelApp(BaseApp):
+                def _hostname(self, catalog):
+                    return super()._hostname(catalog).replace(
+                        "cloudflare-tunnel", self.name
+                    )
+        """
+        ingress = catalog.get("ingress", {}) if catalog else {}
+        base = ingress.get("base_domain", "example.net")
+        return f"{self.name}.{base}"
+
+    def _labels(self) -> dict[str, str]:
+        """Canonical k8s label set every app stamps on
+        its generated manifests.
+
+        WP9 — apps embed this set in their rendered
+        YAML (namespaces, Services, Secrets,
+        Deployments), then layer app-specific extras
+        via the standard `|` union:
+
+            labels = super()._labels() | {
+                "app.kubernetes.io/component": "admin-credentials"
+            }
+
+        The `_labels_` helper ships these keys:
+
+          * `app.kubernetes.io/name` — `self.name`, the
+            app's stable identity. Used by
+            `kubectl get all -l app.kubernetes.io/name=<name>`
+            to surface everything a single app owns.
+          * `app.kubernetes.io/managed-by` —
+            `proxmox-cicd`. Lets operators query every
+            orchestrator-owned resource with
+            `kubectl get all -l app.kubernetes.io/managed-by=proxmox-cicd`
+            regardless of which app wrote it.
+
+        Apps are free to add their own keys
+        (`component`, `part-of`, etc.) but MUST keep
+        these two — they're the public identity
+        contract.
+        """
+        return {
+            "app.kubernetes.io/name": self.name,
+            "app.kubernetes.io/managed-by": "proxmox-cicd",
+        }
+
+    def _annotations(self) -> dict[str, str]:
+        """Canonical annotation set every app stamps on
+        its generated manifests.
+
+        Mirrors `_labels()` for resources that don't
+        always get labels (some operators filter on
+        either labels or annotations — having
+        `managed-by` on both covers both queries).
+
+        Apps extend via `super()._annotations() | {...}`.
+        """
+        return {
+            "app.kubernetes.io/managed-by": "proxmox-cicd",
+        }
+
+    @staticmethod
+    def _deep_merge(
+        base: dict[str, Any],
+        overlay: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Recursively merge `overlay` into `base`.
+
+        WP9 lifts the canonical deep-merge from
+        `catalog.py` (which keeps its own copy as a
+        back-compat re-export). New callers should
+        reach for `BaseApp._deep_merge`; `catalog.py`
+        delegates here so the merge behaviour lives
+        in exactly one place.
+
+        Pure-function style: returns a new dict, never
+        mutates the inputs. The signature stays loose
+        (`dict[str, Any]`) because values can be
+        strings, ints, bools, lists, or nested dicts
+        — the merge handles the recursive case only
+        for `dict` values; everything else is a
+        shallow replace.
+        """
+        out: dict[str, Any] = dict(base)
+        for key, value in overlay.items():
+            if (
+                key in out
+                and isinstance(out[key], dict)
+                and isinstance(value, dict)
+            ):
+                out[key] = BaseApp._deep_merge(
+                    out[key],
+                    value,
+                )
+            else:
+                out[key] = value
+        return out
+
+    def _values_file(self, ctx: Any) -> Path:
+        """Path to the per-app default values YAML.
+
+        WP9 — replaces the four per-app `_values_file`
+        methods that read
+        `ctx.repo_root / DEFAULT_VALUES_FILE`. The
+        class attribute (`default_values_file`) holds
+        the path relative to `ctx.repo_root`; this
+        helper joins them.
+
+        Apps that don't ship a values file
+        (`CloudflareTunnel` is the only current
+        example) MUST override `default_values_file =
+        ""` and this method to return `None`, or
+        simply not call it. The default raises
+        `NotImplementedError` so the mistake is loud:
+        calling `_values_file` on an app without a
+        values file is a programming error, not a
+        runtime failure mode.
+        """
+        rel = self.default_values_file
+        if not isinstance(rel, str) or not rel:
+            raise NotImplementedError(
+                f"{type(self).__name__}._values_file is "
+                f"unavailable: declare `default_values_file` "
+                f"as a class attribute or override "
+                f"_values_file()."
+            )
+        return Path(ctx.repo_root) / rel
+
+    def _rendered_values_file(self, ctx: Any) -> Path:
+        """Path to the per-apply *rendered* values YAML.
+
+        Apps that overlay runtime-only values on top of
+        the committed `default_values_file` (e.g.
+        injecting the Vaultwarden-resolved admin
+        password into gitea's `existingSecret`) write
+        the overlay to a sibling file next to the
+        committed one. The render step (WP10's
+        `cicdctl render`) writes the same path, so
+        `apply()` and the CLI command agree on the
+        filename.
+
+        WP9 — centralizes the path construction so the
+        `values-rendered` literal lives in one place.
+        Apps reach for this helper whenever their plan
+        output mentions the rendered file by name.
+
+        Default filename is
+        `<default_values_file-stem>.values-rendered.yaml`.
+        Apps that don't ship a committed values file
+        (cloudflared is the only current example — the
+        rendered output is the *only* values input to
+        `helm upgrade`) declare a
+        `_rendered_values_filename` class attribute to
+        override the name. The override is a literal
+        filename (no path), and `BaseApp` joins it to
+        `ctx.repo_root / "values"`.
+
+        Raises `NotImplementedError` if the app
+        doesn't have a `default_values_file` AND
+        doesn't declare `_rendered_values_filename`.
+        """
+        override = getattr(type(self), "_rendered_values_filename", None)
+        if isinstance(override, str) and override:
+            return Path(ctx.repo_root) / "values" / override
+        committed = self._values_file(ctx)
+        return committed.parent / f"{committed.stem}.values-rendered.yaml"
+
+    # Override hook for `_rendered_values_file`. Apps
+    # without a committed values file declare a literal
+    # filename here; apps with a committed file leave
+    # this unset and `_rendered_values_file` derives the
+    # filename from `default_values_file.stem`.
+    _rendered_values_filename: ClassVar[str | None] = None
 
     # ----- abstract four-method contract -----
 

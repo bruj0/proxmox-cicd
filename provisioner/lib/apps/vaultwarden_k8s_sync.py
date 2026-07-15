@@ -67,8 +67,7 @@ class VaultwardenK8sSyncApp(BaseApp):
     image_version = "2.0.0"
     default_values_file = "values/vaultwarden-kubernetes-secrets.yaml"
 
-    def _values_file(self, ctx: Container) -> Path:
-        return ctx.repo_root / self.default_values_file
+    # `_values_file` is inherited from `BaseApp` (WP9).
 
     def plan(
         self, ctx: Container, catalog: dict[str, Any]
@@ -485,13 +484,25 @@ class VaultwardenK8sSyncApp(BaseApp):
     ) -> Path:
         """Build a runtime values file with the operator's
         `VAULTWARDEN__SERVERURL` overlaid on top of the
-        committed values file. Writes a sibling
-        `vaultwarden-kubernetes-secrets.values-rendered.yaml`
-        next to the committed file in `values/` (operator-
-        local — the file should be added to .gitignore
-        or cleaned up by `git clean -fX values/`). Falls
-        back to the committed file unchanged if no URL
-        was supplied.
+        committed values file. Writes a sibling rendered
+        file next to the committed one. Falls back to
+        the committed file unchanged if no URL was
+        supplied.
+
+        WP9 — kept as a `@staticmethod` (no `self`,
+        no `ctx`) because the pre-WP9 callers in tests
+        pass `committed_values` directly. The path
+        derivation here MUST stay in sync with the
+        canonical helper on `BaseApp`; if
+        `_rendered_values_file(ctx)` ever changes its
+        shape, update both. The `_render_values`
+        static guard (see
+        `tests/test_apps_no_inline_wp9_patterns.py`)
+        is parameterized to ignore `_render_values`
+        itself — the only place we're allowed to
+        construct the rendered path manually — so the
+        canonical path lives in exactly one place
+        (here).
         """
         if not server_url:
             return committed_values
@@ -527,7 +538,7 @@ class VaultwardenK8sSyncApp(BaseApp):
                 f"{new_line}\n"
             )
         out_path = committed_values.with_name(
-            committed_values.stem + ".values-rendered.yaml"
+            f"{committed_values.stem}.values-rendered.yaml"
         )
         out_path.write_text(text)
         return out_path

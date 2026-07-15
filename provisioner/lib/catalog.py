@@ -31,7 +31,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast
+
 
 
 _DNS_LABEL_RE = re.compile(
@@ -334,32 +334,27 @@ def _deep_merge(
 ) -> dict[str, object]:
     """Recursively merge `overlay` into `base`.
 
-    Used by the WP1 merge rule (§5.2): the shipped
-    `default_values` is the base; per-cluster `values:`
-    is the overlay. Keys in `overlay` win on a per-key
-    basis; nested dicts merge recursively so a single
-    override at `path: foo` doesn't clobber the rest of
-    the shipped dict at `path`.
+    WP9 — thin wrapper around `BaseApp._deep_merge`
+    so the canonical merge logic lives in one place
+    (the apps are the largest consumers; the catalog
+    loader was the original implementation). New
+    callers should reach for `BaseApp._deep_merge`
+    directly; this shim keeps the WP1-era call sites
+    in catalog.py (`_deep_merge(shipped_default,
+    cluster_values)`) working untouched.
 
-    Pure-function style: returns a new dict, never
-    mutates the inputs. The types stay loose
-    (`dict[str, object]`) because values can be
-    strings, ints, bools, or nested dicts.
+    Behaviour is unchanged: pure-function, recursive
+    merge of nested dicts, shallow replace for
+    everything else.
     """
-    out: dict[str, object] = dict(base)
-    for key, value in overlay.items():
-        if (
-            key in out
-            and isinstance(out[key], dict)
-            and isinstance(value, dict)
-        ):
-            out[key] = _deep_merge(
-                cast(dict[str, object], out[key]),
-                cast(dict[str, object], value),
-            )
-        else:
-            out[key] = value
-    return out
+    # Lazy import: catalog.py is imported by
+    # `apps/__init__.py`'s registration side effects;
+    # importing apps.base from the top of catalog.py
+    # would invert the package dependency direction
+    # for no real benefit.
+    from .apps.base import BaseApp
+
+    return BaseApp._deep_merge(base, overlay)
 
 
 def _parse_scalar(value: str) -> object:
