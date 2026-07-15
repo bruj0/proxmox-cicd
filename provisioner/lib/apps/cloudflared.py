@@ -151,13 +151,13 @@ import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from ..container import Container
 from . import AppApplyResult, AppPlanResult, AppStatus, register
+from .base import BaseApp
 from .cloudflared_tunnel import (
     CloudflaredTunnelClient,
     TunnelRecord,
@@ -231,11 +231,10 @@ _CF_API_TIMEOUT_S = 30.0
 _MIN_TOKEN_LIFETIME_S = 24 * 3600
 
 
-@dataclass
-class CloudflaredApp:
+class CloudflaredApp(BaseApp):
     """AppSpec for the cloudflared tunnel (remotely-managed)."""
 
-    name: str = "cloudflared"
+    name = "cloudflared"
 
     # ---------- runner plumbing ----------
 

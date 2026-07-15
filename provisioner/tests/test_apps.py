@@ -14,6 +14,7 @@ from provisioner.lib.apps import (
     register,
     reset_registry,
 )
+from provisioner.lib.apps.base import BaseApp
 from provisioner.lib.apps.gitea import (
     CHART_VERSION,
     NAMESPACE,
@@ -25,25 +26,53 @@ from provisioner.lib.container import Container
 # ----------------------------------------------------------- registry mechanics
 
 
-def test_register_rejects_class_without_name() -> None:
+def test_register_rejects_non_baseapp_class() -> None:
+    """WP0: `@register` rejects a class that doesn't subclass
+    `BaseApp`. Pre-WP0, the registry accepted any class with
+    a `name` attribute and four methods; WP0 narrows the
+    contract.
+    """
     reset_registry()
 
-    class Nameless:
+    class NotAnApp:
+        name = "not-an-app"
         def plan(self, ctx, catalog): ...
         def apply(self, ctx, catalog): ...
         def destroy(self, ctx, catalog): ...
         def status(self, ctx, catalog): ...
 
     with pytest.raises(TypeError) as ei:
-        register(Nameless)  # type: ignore[arg-type]
-    assert "must define a non-empty `name`" in str(ei.value)
+        register(NotAnApp)  # type: ignore[arg-type]
+    assert "must subclass BaseApp" in str(ei.value)
+
+
+def test_register_rejects_class_without_name() -> None:
+    """A `BaseApp` subclass without `name` cannot be registered
+    (the name check fires at `__init_subclass__`, so we can't
+    even build the class object). This test pins the runtime
+    error path via `@register` for completeness.
+    """
+    reset_registry()
+
+    # Define the class inside a `pytest.raises` block — the
+    # `BaseApp.__init_subclass__` hook raises TypeError when
+    # `name` is missing.
+    with pytest.raises(TypeError) as ei:
+
+        class NamelessApp(BaseApp):  # type: ignore[abstract]
+            def plan(self, ctx, catalog): ...
+            def apply(self, ctx, catalog): ...
+            def destroy(self, ctx, catalog): ...
+            def status(self, ctx, catalog): ...
+
+    assert "must define `name`" in str(ei.value)
 
 
 def test_register_rejects_duplicate_name() -> None:
     reset_registry()
 
     @register
-    class A:
+    class A(BaseApp):
         name = "dup-app"
 
         def plan(self, ctx, catalog): ...
@@ -54,7 +83,7 @@ def test_register_rejects_duplicate_name() -> None:
     with pytest.raises(ValueError) as ei:
 
         @register
-        class B:  # noqa: F811
+        class B(BaseApp):  # noqa: F811
             name = "dup-app"
 
             def plan(self, ctx, catalog): ...
@@ -69,7 +98,7 @@ def test_all_apps_returns_registration_order() -> None:
     reset_registry()
 
     @register
-    class One:
+    class One(BaseApp):
         name = "one"
 
         def plan(self, ctx, catalog): ...
@@ -78,7 +107,7 @@ def test_all_apps_returns_registration_order() -> None:
         def status(self, ctx, catalog): ...
 
     @register
-    class Two:
+    class Two(BaseApp):
         name = "two"
 
         def plan(self, ctx, catalog): ...

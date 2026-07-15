@@ -37,12 +37,12 @@ no-op.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from ..container import Container
 from . import AppApplyResult, AppPlanResult, AppStatus, register
+from .base import BaseApp
 
 # Chart constants. Pinned to chart 2.0.0 (matches appVersion 2.0.0;
 # the chart repo's HEAD may carry a 0.1.0 + "latest" dev tag, but
@@ -57,11 +57,10 @@ RELEASE = "vaultwarden-kubernetes-secrets"
 DEFAULT_VALUES_FILE = "values/vaultwarden-kubernetes-secrets.yaml"
 
 
-@dataclass
-class VaultwardenK8sSyncApp:
+class VaultwardenK8sSyncApp(BaseApp):
     """AppSpec for VaultwardenK8sSync (VKS)."""
 
-    name: str = "vaultwarden-k8s-sync"
+    name = "vaultwarden-k8s-sync"
 
     def _values_file(self, ctx: Container) -> Path:
         return ctx.repo_root / DEFAULT_VALUES_FILE

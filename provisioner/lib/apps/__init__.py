@@ -17,6 +17,7 @@ from collections.abc import Callable
 
 from ..container import Container
 from ..log import StructuredLogger
+from .base import BaseApp
 
 
 @dataclass
@@ -71,21 +72,14 @@ class AppStatus:
 
 @runtime_checkable
 class AppSpec(Protocol):
-    """Every app in the catalog implements this protocol.
+    """Legacy Protocol kept for backward compatibility with
+    code that type-narrows `app_by_name(...)` results.
 
-    The orchestrator only knows about the 4 methods + the
-    `name` field; the actual values, manifests, and probes
-    are private to each subclass.
-
-    SOLID notes:
-      S — one subclass per app, one file per subclass.
-      O — adding a new app = new subclass + @register, no
-          changes to the orchestrator.
-      L — every subclass honors the same 4-method contract;
-          the orchestrator can swap any app for any other.
-      I — the protocol exposes only what the orchestrator
-          needs; helpers stay private.
-      D — apps take a `Container`, not concrete runners.
+    WP0 replaces this with `BaseApp` (a real `abc.ABC`).
+    `AppSpec` is preserved as a `Protocol` so existing
+    `isinstance(x, AppSpec)` runtime checks in conftest.py
+    keep working during the migration; new code should
+    use `BaseApp` directly.
     """
 
     name: str
@@ -102,15 +96,26 @@ class AppSpec(Protocol):
 # ----- registry -----
 
 
-_REGISTRY: dict[str, type[AppSpec]] = {}
+_REGISTRY: dict[str, type[BaseApp]] = {}
 
 
-def register(cls: type[AppSpec]) -> type[AppSpec]:
+def register(cls: type[BaseApp]) -> type[BaseApp]:
     """Decorator: register `cls` in the global app registry.
 
     Apps import this from `provisioner.lib.apps` and decorate
-    their AppSpec subclass. The orchestrator pulls them back
+    their `BaseApp` subclass. The orchestrator pulls them back
     out via `all_apps()`.
+
+    WP0 invariants enforced here:
+
+      1. `cls` must be a subclass of `BaseApp` (rejects the
+         old `@dataclass`-with-no-base-shape that pre-WP0
+         code used).
+      2. `cls` must NOT be decorated with `@dataclass`
+         (apps are behaviour with stable identity, not data;
+         a dataclass-generated `__init__` shadows the
+         no-arg instantiation contract).
+      3. `name` must be a non-empty string.
 
     Idempotent on the same class object: a re-decorated
     `GiteaApp` doesn't re-register, even though Python
@@ -118,6 +123,17 @@ def register(cls: type[AppSpec]) -> type[AppSpec]:
     the "same logical app" by `cls.__module__ + cls.__qualname__`
     so test re-imports are safe.
     """
+    if not isinstance(cls, type) or not issubclass(cls, BaseApp):
+        raise TypeError(
+            f"{cls.__name__ if isinstance(cls, type) else cls!r} "
+            f"must subclass BaseApp to be @register'ed."
+        )
+    if hasattr(cls, "__dataclass_fields__"):
+        raise TypeError(
+            f"{cls.__name__} must not be decorated with @dataclass; "
+            f"apps are behaviour with stable identity, not data. "
+            f"Inherit BaseApp and declare `name` as a class attribute."
+        )
     name = getattr(cls, "name", None)
     if not name:
         raise TypeError(
@@ -140,12 +156,12 @@ def register(cls: type[AppSpec]) -> type[AppSpec]:
     return cls
 
 
-def all_apps() -> tuple[type[AppSpec], ...]:
-    """Return every registered AppSpec subclass, in registration order."""
+def all_apps() -> tuple[type[BaseApp], ...]:
+    """Return every registered BaseApp subclass, in registration order."""
     return tuple(_REGISTRY.values())
 
 
-def app_by_name(name: str) -> type[AppSpec] | None:
+def app_by_name(name: str) -> type[BaseApp] | None:
     """Look up a single app class by its registered name."""
     return _REGISTRY.get(name)
 
@@ -164,8 +180,9 @@ def _make_logger_sink(path: Path, step: str, message: str) -> Callable[..., None
 __all__ = [
     "AppApplyResult",
     "AppPlanResult",
-    "AppSpec",
+    "AppSpec",  # legacy: re-exported as an alias for BaseApp
     "AppStatus",
+    "BaseApp",
     "all_apps",
     "app_by_name",
     "register",

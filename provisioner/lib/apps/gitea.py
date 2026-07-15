@@ -69,7 +69,6 @@ import base64
 import os
 import secrets
 import string
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -77,6 +76,7 @@ from ..container import Container
 from ..kubeconfig_loader import Kubeconfig
 from ..kubectl_runner import KubectlRunner
 from . import AppApplyResult, AppPlanResult, AppStatus, register
+from .base import BaseApp
 
 # Constants pinned in versions.yaml + versions.lock.yaml.
 CHART = "oci://docker.gitea.com/charts/gitea"
@@ -148,11 +148,10 @@ spec:
 """
 
 
-@dataclass
-class GiteaApp:
+class GiteaApp(BaseApp):
     """AppSpec for the Gitea chart."""
 
-    name: str = "gitea"
+    name = "gitea"
 
     def _values_file(self, ctx: Container) -> Path:
         return ctx.repo_root / DEFAULT_VALUES_FILE

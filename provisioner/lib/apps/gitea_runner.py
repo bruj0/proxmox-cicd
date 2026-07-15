@@ -115,13 +115,13 @@ import json
 import os
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from ..container import Container
 from ..kubectl_runner import KubectlRunner
 from . import AppApplyResult, AppPlanResult, AppStatus, register
+from .base import BaseApp
 
 NAMESPACE = "gitea-runner"
 RELEASE = "gitea-runner"
@@ -159,11 +159,10 @@ VKS_TRIPLE_SECRET_KEY = "registrationToken"
 VW_SKIP_FLAG = "skip_runner_seed"
 
 
-@dataclass
-class GiteaRunnerApp:
+class GiteaRunnerApp(BaseApp):
     """AppSpec for the gitea-runner chart."""
 
-    name: str = "gitea-runner"
+    name = "gitea-runner"
 
     def _values_file(self, ctx: Container) -> Path:
         return ctx.repo_root / DEFAULT_VALUES_FILE
