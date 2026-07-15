@@ -627,19 +627,17 @@ class GiteaApp(BaseApp):
             )
             return
 
-        secret_yaml = (
-            "apiVersion: v1\n"
-            "kind: Secret\n"
-            "metadata:\n"
-            f"  name: {ADMIN_SECRET_NAME}\n"
-            f"  namespace: {NAMESPACE}\n"
-            "  labels:\n"
-            "    app.kubernetes.io/name: gitea\n"
-            "    app.kubernetes.io/component: admin-credentials\n"
-            "type: Opaque\n"
-            "stringData:\n"
-            f"  username: {ADMIN_USERNAME}\n"
-            f"  password: {password}\n"
+        # WP5 — admin-secret manifest moved to
+        # `apps/templates/gitea/admin-secret.yaml`.
+        # The password is freshly minted (or loaded
+        # from disk) at this point; it never lives in
+        # a log line or a file outside `/tmp`.
+        secret_yaml = self._render_template(
+            "admin-secret.yaml",
+            secret_name=ADMIN_SECRET_NAME,
+            namespace=NAMESPACE,
+            username=ADMIN_USERNAME,
+            password=password,
         )
         apply_result = kubectl.apply(
             manifest=secret_yaml,

@@ -397,15 +397,17 @@ class GiteaRunnerApp(BaseApp):
             # exactly one Secret. If VKS has since written a
             # real token, the next apply sees the populated
             # value and stops touching it.
-            secret_yaml = (
-                "apiVersion: v1\n"
-                "kind: Secret\n"
-                "metadata:\n"
-                f"  name: {RUNNER_CONFIG_SECRET}\n"
-                f"  namespace: {NAMESPACE}\n"
-                "type: Opaque\n"
-                "stringData:\n"
-                f'  registrationToken: "{placeholder}"\n'
+            # WP5 — moved out of an inline f-string
+            # into `apps/templates/gitea-runner/
+            # registration-secret.yaml`. The
+            # placeholder is the known regression-guard
+            # token that VKS replaces on its first
+            # sync cycle.
+            secret_yaml = self._render_template(
+                "registration-secret.yaml",
+                secret_name=RUNNER_CONFIG_SECRET,
+                namespace=NAMESPACE,
+                placeholder=placeholder,
             )
             secret_apply = kubectl.apply(
                 manifest=secret_yaml,

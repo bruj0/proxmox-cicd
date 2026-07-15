@@ -1184,15 +1184,12 @@ class CloudflaredApp(BaseApp):
         # 0. Pre-create the namespace. helm install
         #    --create-namespace handles it too, but we want
         #    a deterministic name on the first install so
-        #    subsequent steps can rely on it.
+        #    subsequent steps can rely on it. WP5 — the
+        #    manifest now lives in
+        #    `apps/templates/cloudflared/namespace.yaml`.
         ns_create = kubectl.apply(
-            manifest=(
-                "apiVersion: v1\n"
-                "kind: Namespace\n"
-                "metadata:\n"
-                f"  name: {NAMESPACE}\n"
-                "  labels:\n"
-                '    app.kubernetes.io/name: cloudflared\n'
+            manifest=self._render_template(
+                "namespace.yaml", namespace=NAMESPACE
             ),
             namespace=None,
             server_side=False,

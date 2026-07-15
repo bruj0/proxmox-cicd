@@ -200,18 +200,33 @@ class VaultwardenK8sSyncApp(BaseApp):
         #    (via scripts/reseed-vks-creds.sh). kubectl
         #    apply merges stringData, so an empty key
         #    in the manifest would erase the live value.
-        secret_yaml_lines = [
-            "apiVersion: v1",
-            "kind: Secret",
-            "metadata:",
-            f"  name: {NAMESPACE}",
-            f"  namespace: {NAMESPACE}",
-            "  labels:",
-            "    app.kubernetes.io/name: vaultwarden-kubernetes-secrets",
-            "    app.kubernetes.io/instance: vaultwarden-kubernetes-secrets",
-            "type: Opaque",
-            "stringData:",
-        ]
+        #
+        # WP5 note: this manifest is structurally
+        # dynamic (the list of stringData keys is
+        # driven by what .env actually exposes) and
+        # so doesn't fit the `_render_template`
+        # pattern cleanly. The static header is
+        # loaded from `vks-auth-secret-header.yaml`
+        # and the dynamic stringData block is
+        # appended at apply time. If a future WP
+        # adds a fourth credential key, only the
+        # yaml_lines tuple below needs updating.
+        # WP5 — the static header (apiVersion +
+        # kind + metadata + type + stringData:)
+        # comes from `templates/vaultwarden-k8s-sync/
+        # auth-secret-header.yaml`. The dynamic
+        # stringData entries (driven by what `.env`
+        # actually exposes) are appended at apply
+        # time. This keeps the YAML structure
+        # version-controlled while the
+        # credential-key list lives next to the
+        # .env parsing code.
+        header_yaml = self._render_template(
+            "auth-secret-header.yaml",
+            secret_name=NAMESPACE,
+            namespace=NAMESPACE,
+        )
+        secret_yaml_lines = header_yaml.rstrip("\n").split("\n")
         seeded_keys: list[str] = []
         for key in (
             "BW_CLIENTID",

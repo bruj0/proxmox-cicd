@@ -1,0 +1,17 @@
+# cloudflared/namespace.yaml — the cloudflared
+# namespace, created explicitly before helm install so
+# subsequent apply steps have a deterministic name to
+# target. WP5.
+#
+# Substituted variables:
+#   ${namespace} — the cloudflared namespace
+#                  (always NAMESPACE = "cloudflared" today,
+#                  kept as a substitution for symmetry
+#                  with the other manifests).
+#
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${namespace}
+  labels:
+    app.kubernetes.io/name: cloudflared
