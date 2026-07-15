@@ -607,11 +607,6 @@ class GiteaRunnerApp(BaseApp):
         #    (involves every apply incrementing Gitea's
         #    registration-token counter and then discarding
         #    the freshly-minted token).
-        from provisioner.lib.vaultwarden import (
-            build_secure_note_payload,
-            vks_triple,
-        )
-
         existing = client.list_ciphers()
         matching: list[dict[str, Any]] = []
         for c in existing:
@@ -679,25 +674,38 @@ class GiteaRunnerApp(BaseApp):
                 f"before retrying the gitea-runner apply."
             )
 
-        payload = build_secure_note_payload(
+        # WP12 — push the freshly-minted token via the
+        # canonical helper. The duplicates-check above
+        # raised on `>1 cipher` already, so we know
+        # exactly one matching cipher or zero ciphers
+        # remain. Zero → helper creates the cipher.
+        # One → helper short-circuits as a no-op
+        # (idempotent dedup). We pre-emit the
+        # `vaultwarden_seeded` audit event below only on
+        # the create branch, mirroring the helper's
+        # audit shape.
+
+        before = len(client.list_ciphers())
+        BaseApp._seed_vaultwarden_note(
+            ctx,
+            client,
+            catalog,
             note_name="gitea runner registration token",
             body_text=token,
-            custom_fields=vks_triple(
-                namespace=VKS_TRIPLE_NAMESPACE,
-                secret_name=VKS_TRIPLE_SECRET_NAME,
-                secret_key=VKS_TRIPLE_SECRET_KEY,
-            ),
-            user_key=client.user_key,
-        )
-        client.create_cipher(payload)
-
-        ctx.logger.info(
-            "gitea_runner.vaultwarden_seeded",
             namespace=VKS_TRIPLE_NAMESPACE,
             secret_name=VKS_TRIPLE_SECRET_NAME,
             secret_key=VKS_TRIPLE_SECRET_KEY,
-            token_length=len(token),
+            app_short="gitea_runner",
         )
+        after = len(client.list_ciphers())
+        if after > before:
+            ctx.logger.info(
+                "gitea_runner.vaultwarden_seeded",
+                namespace=VKS_TRIPLE_NAMESPACE,
+                secret_name=VKS_TRIPLE_SECRET_NAME,
+                secret_key=VKS_TRIPLE_SECRET_KEY,
+                token_length=len(token),
+            )
 
     def _fetch_gitea_admin_from_vaultwarden(
         self,
@@ -719,34 +727,15 @@ class GiteaRunnerApp(BaseApp):
         /identity/connect/token round-trip on every
         apply and matches the cloudflared seeding
         pattern.
+
+        WP12 — replaced the inline
+        ``VaultwardenClient.login(...)`` call with
+        ``BaseApp._vaultwarden_client`` so the auth +
+        BW_CLIENTID decode path lives in one place.
         """
-        from .gitea import GiteaApp
-        from .vaultwarden_k8s_sync import VaultwardenK8sSyncApp
-        from provisioner.lib.vaultwarden import VaultwardenClient
-
-        # 1. Read the operator's .env for VW creds.
-        env = VaultwardenK8sSyncApp._load_dotenv(ctx.repo_root)
-        creds = GiteaApp._read_dotenv_creds(ctx.repo_root, catalog)
-        if not creds["master_password"]:
-            raise RuntimeError(
-                "VAULTWARDEN__MASTERPASSWORD missing from .env; "
-                "the orchestrator's contract is that Vaultwarden "
-                "must be working before any app can install. Add "
-                "VAULTWARDEN__MASTERPASSWORD=<pw> to "
-                f"{ctx.repo_root / '.env'} (gitignored, mode 0600 "
-                "is the orchestrator's convention). See "
-                "docs/runbooks/setup-vaultwarden-sync.md."
-            )
-
-        # 2. Log in.
-        client = VaultwardenClient.login(
-            server_url=creds["server_url"],
-            client_id=env.get("BW_CLIENTID", ""),
-            client_secret=env.get("BW_CLIENTSECRET", ""),
-            email=creds["email"],
-            master_password=creds["master_password"],
-        )
-        creds["master_password"] = ""  # best-effort overwrite
+        # 1. + 2. WP12 helper: reads BW_CLIENTID /
+        #    BW_CLIENTSECRET, .env creds, and logs in.
+        client = BaseApp._vaultwarden_client(ctx, catalog)
 
         # 3. Find the cipher with VKS triple
         #    namespaces=gitea, secret-name=gitea-admin-password,

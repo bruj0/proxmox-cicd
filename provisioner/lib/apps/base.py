@@ -399,6 +399,332 @@ class BaseApp(abc.ABC):
             )
         return value.strip()
 
+    # ----- Vaultwarden seed helpers (WP12) -----
+
+    # Canonical fallback when neither the per-cluster
+    # catalog nor the operator's `.env` supplies a
+    # Vaultwarden base URL. Tests monkey-patch this to
+    # the empty string to assert the "no URL at all"
+    # failure mode.
+    CANONICAL_VAULTWARDEN_URL: ClassVar[str] = (
+        "https://bitwarden.bruj0.net"
+    )
+    CANONICAL_VAULTWARDEN_EMAIL: ClassVar[str] = (
+        "secrets@bruj0.net"
+    )
+
+    @staticmethod
+    def _read_dotenv_creds(
+        repo_root: Path,
+        catalog: dict[str, Any],
+    ) -> dict[str, str]:
+        """Resolve `master_password`, `server_url`,
+        and `email` from catalog > .env > canonical
+        defaults, in that precedence order.
+
+        WP12 — replaces the two near-identical copies
+        in `GiteaApp._read_dotenv_creds` and
+        `CloudflareApp._read_dotenv_creds`. The .env
+        parser lives on `BaseApp` (WP11) and is used
+        for the `.env` branch. The catalog branch
+        reads `catalog.vaultwarden.{master_password,
+        server_url, email}`. The canonical defaults
+        match what the legacy `seed-note` CLI used;
+        they're a last-resort fallback so a misconfigured
+        operator still gets a working orchestrator.
+
+        Returns: a dict with three keys, each always
+        populated to a non-None string. `master_password`
+        is the empty string when neither catalog nor
+        `.env` supplies one — the *caller* (typically
+        `_vaultwarden_client`) raises on the empty value
+        rather than this helper, because the empty
+        value has different semantics for "use the catalog
+        master_password too" (test only) vs "the
+        operator hasn't provisioned Vaultwarden yet"
+        (real apply path).
+
+        Raises on missing URL only when both catalog
+        and `.env` are empty AND the canonical fallback
+        is monkey-patched off (in tests). Production
+        never raises here — the canonical fallback is
+        always present.
+        """
+        catalog_vw = catalog.get("vaultwarden", {}) or {}
+        env = BaseApp._load_dotenv(repo_root)
+
+        master_password = (
+            catalog_vw.get("master_password", "")
+            or env.get("VAULTWARDEN__MASTERPASSWORD", "")
+        )
+
+        server_url = (
+            catalog_vw.get("server_url", "")
+            or env.get("VAULTWARDEN__SERVERURL", "")
+            or BaseApp.CANONICAL_VAULTWARDEN_URL
+        )
+        if not server_url:
+            raise RuntimeError(
+                "Vaultwarden server_url missing: neither "
+                "catalog.vaultwarden.server_url nor "
+                ".env VAULTWARDEN__SERVERURL nor the "
+                "canonical fallback is set."
+            )
+
+        dotenv_email = ""
+        for k, v in env.items():
+            if k.strip().lower() in ("client_email", "email"):
+                dotenv_email = v
+                break
+        email = (
+            catalog_vw.get("email", "")
+            or dotenv_email
+            or BaseApp.CANONICAL_VAULTWARDEN_EMAIL
+        )
+
+        return {
+            "master_password": master_password,
+            "server_url": server_url,
+            "email": email,
+        }
+
+    @staticmethod
+    def _vaultwarden_client(
+        ctx: Any,
+        catalog: dict[str, Any],
+    ) -> Any:
+        """Authenticate against Vaultwarden and
+        return a `VaultwardenClient`.
+
+        WP12 — replaces the duplicated
+        `VaultwardenClient.login(...)` blocks in the
+        three apps' `_seed_*` helpers. Reads the VKS
+        in-cluster Secret (`vaultwarden-kubernetes-secrets`
+        namespace) for `BW_CLIENTID` + `BW_CLIENTSECRET`
+        via the WP6 `_kubectl` helper, base64-decodes
+        them, and feeds the login kwargs to the
+        library's `VaultwardenClient.login(...)`.
+
+        `master_password`, `server_url`, and `email`
+        come from `_read_dotenv_creds`. The orchestrator's
+        contract is "VW must be working before any app
+        can install"; the helper propagates the
+        `RuntimeError` from the library unchanged so
+        the caller can wrap it with an "app.vaultwarden
+        unreachable" audit-log event.
+
+        Returns: a logged-in `VaultwardenClient` ready
+        for `create_cipher` / `list_ciphers` /
+        `decrypt_cipher_field`. The orchestrator owns
+        session lifecycle (single session per apply).
+        """
+        import base64 as b64
+
+        from provisioner.lib.vaultwarden.client import (
+            VaultwardenClient,
+        )
+
+        kubectl = (
+            ctx.kubectl if hasattr(ctx, "kubectl")
+            and ctx.kubectl is not None
+            else None
+        )
+        if kubectl is None:
+            # Apps that pre-create a kubectl locally
+            # (gitea's WP12 shape uses `self._kubectl(ctx)`)
+            # fall back to the canonical BaseApp runner;
+            # tests pass a mock via `ctx.kubectl`.
+            raise RuntimeError(
+                "ctx.kubectl is required for "
+                "BaseApp._vaultwarden_client (WP12)"
+            )
+
+        client_id_proc = kubectl.get(
+            resource="secret",
+            name="vaultwarden-kubernetes-secrets",
+            namespace="vaultwarden-kubernetes-secrets",
+            jsonpath="{.data.BW_CLIENTID}",
+        )
+        client_secret_proc = kubectl.get(
+            resource="secret",
+            name="vaultwarden-kubernetes-secrets",
+            namespace="vaultwarden-kubernetes-secrets",
+            jsonpath="{.data.BW_CLIENTSECRET}",
+        )
+        if (
+            client_id_proc.returncode != 0
+            or client_secret_proc.returncode != 0
+        ):
+            raise RuntimeError(
+                f"cannot read VaultwardenK8sSync's "
+                f"BW_CLIENTID/BW_CLIENTSECRET from in-cluster "
+                f"Secret: kubectl rc=({client_id_proc.returncode},"
+                f"{client_secret_proc.returncode}). The "
+                f"vaultwarden-k8s-sync app must be applied (and "
+                f"healthy) before any VW-dependent app; see "
+                f"docs/runbooks/setup-vaultwarden-sync.md."
+            )
+
+        try:
+            client_id = b64.b64decode(
+                client_id_proc.stdout.strip()
+            ).decode("utf-8")
+            client_secret = b64.b64decode(
+                client_secret_proc.stdout.strip()
+            ).decode("utf-8")
+        except Exception as e:
+            raise RuntimeError(
+                f"failed to base64-decode VaultwardenK8sSync "
+                f"BW_CLIENTID/BW_CLIENTSECRET: {e}"
+            ) from e
+
+        creds = BaseApp._read_dotenv_creds(
+            ctx.repo_root, catalog
+        )
+        if not creds["master_password"]:
+            raise RuntimeError(
+                "VAULTWARDEN__MASTERPASSWORD missing from "
+                ".env; the orchestrator's contract is that "
+                "Vaultwarden must be working before any app "
+                "can install. Add VAULTWARDEN__MASTERPASSWORD=<pw> "
+                f"to {ctx.repo_root / '.env'} (gitignored). See "
+                f"docs/runbooks/setup-vaultwarden-sync.md."
+            )
+
+        client = VaultwardenClient.login(
+            server_url=creds["server_url"],
+            client_id=client_id,
+            client_secret=client_secret,
+            email=creds["email"],
+            master_password=creds["master_password"],
+        )
+        # Best-effort clear of the master-password
+        # string in our local scope. The library
+        # already derives and zeroes internally; this
+        # just narrows the window where the str lives
+        # on this stack frame.
+        creds["master_password"] = ""
+        return client
+
+    @staticmethod
+    def _seed_vaultwarden_note(
+        ctx: Any,
+        client: Any,
+        catalog: dict[str, Any],
+        *,
+        note_name: str,
+        body_text: str,
+        namespace: str,
+        secret_name: str,
+        secret_key: str,
+        app_short: str | None = None,
+    ) -> None:
+        """Idempotently push `body_text` to Vaultwarden
+        as a Secure Note tagged with the VKS triple
+        `(namespace, secret_name, secret_key)` so
+        VaultwardenK8sSync recreates the cluster
+        Secret when helm ever deletes it.
+
+        WP12 — replaces the three per-app private
+        seed methods that share the same five-step
+        idempotent dance:
+
+          1. List existing ciphers.
+          2. Decrypt their custom_fields looking for
+             the VKS triple match.
+          3. If matched, skip (log `<app>.vaultwarden_skipped`).
+          4. If unmatched, build a `BitwardenSecret`
+             payload with the triple as `custom_fields`
+             and call `create_cipher(payload)`.
+          5. Log `<app>.vaultwarden_seeded` on success.
+
+        App callers pass `app_short=<self.name>` so
+        the audit-log event includes the app name
+        (e.g. `gitea.vaultwarden_seeded`). Apps
+        without an explicit override default to the
+        helper's caller-site name.
+
+        The `body_text` parameter is the value the
+        cluster Secret stores (admin password, tunnel
+        token, runner registration token, ...). The
+        helper does NOT validate it; the caller does.
+        """
+        from provisioner.lib.vaultwarden.note import (
+            build_secure_note_payload,
+            vks_triple,
+        )
+
+        log = getattr(ctx, "logger", None)
+        if app_short is None:
+            app_short = getattr(ctx, "app_short", "vaultwarden")
+
+        # 1. List existing ciphers.
+        existing = client.list_ciphers()
+        already_seeded = False
+        for cipher in existing:
+            fields = cipher.get("fields") or []
+            triple: dict[str, str] = {}
+            for i in range(len(fields)):
+                try:
+                    k = client.decrypt_cipher_field_name(
+                        cipher, index=i
+                    )
+                    triple[k] = client.decrypt_cipher_field(
+                        cipher, name=k
+                    )
+                except Exception:
+                    continue
+            if (
+                triple.get("namespaces") == namespace
+                and triple.get("secret-name") == secret_name
+                and triple.get("secret-key") == secret_key
+            ):
+                already_seeded = True
+                break
+
+        if already_seeded:
+            if log is not None:
+                log.info(
+                    f"{app_short}.vaultwarden_skipped",
+                    reason="cipher with matching VKS "
+                    "triple already exists",
+                    namespace=namespace,
+                    secret_name=secret_name,
+                    secret_key=secret_key,
+                )
+            return
+
+        # 2. Build + send the payload.
+        payload = build_secure_note_payload(
+            note_name=note_name,
+            body_text=body_text,
+            custom_fields=vks_triple(
+                namespace=namespace,
+                secret_name=secret_name,
+                secret_key=secret_key,
+            ),
+            user_key=client.user_key,
+        )
+        try:
+            client.create_cipher(payload)
+        except Exception as e:
+            raise RuntimeError(
+                f"cannot seed {app_short} {secret_name} "
+                f"to Vaultwarden: {type(e).__name__}: {e}. "
+                f"The orchestrator's contract is 'Vaultwarden "
+                f"must be working before any app can install'. "
+                f"See docs/runbooks/setup-vaultwarden-sync.md."
+            ) from e
+
+        # 3. Audit-log the seed outcome.
+        if log is not None:
+            log.info(
+                f"{app_short}.vaultwarden_seeded",
+                namespace=namespace,
+                secret_name=secret_name,
+                secret_key=secret_key,
+            )
+
     # ----- kubeconfig resolution (WP6) -----
 
     def _kubectl(self, ctx: Any) -> Any:

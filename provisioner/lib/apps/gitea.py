@@ -524,76 +524,6 @@ class GiteaApp(BaseApp):
         )
         return password
 
-    @staticmethod
-    def _read_dotenv_creds(
-        repo_root: Path, catalog: dict[str, Any]
-    ) -> dict[str, str]:
-        """Resolve the three Vaultwarden login knobs
-        (master_password, server_url, email) from
-        catalog.yaml + .env in precedence order
-        (catalog > .env > canonical defaults).
-
-        Extracted as a static method so the tests can pin
-        each precedence rule in isolation. The .env
-        parser itself lives on VaultwardenK8sSyncApp
-        (which owns the .env contract); this method is
-        just the precedence wrapper.
-
-        Returns a dict with three keys, each always
-        populated to a non-None string (possibly the
-        canonical default for server_url/email; possibly
-        the empty string for master_password when the
-        operator hasn't put one in yet).
-        """
-        from .vaultwarden_k8s_sync import VaultwardenK8sSyncApp
-
-        env_creds = VaultwardenK8sSyncApp._load_dotenv(repo_root)
-        catalog_vw = catalog.get("vaultwarden", {}) or {}
-
-        # master_password: catalog > .env. We never
-        # default it — an empty value is the
-        # "missing-from-.env" signal the helper raises on.
-        master_password = (
-            catalog_vw.get("master_password", "")
-            or env_creds.get("VAULTWARDEN__MASTERPASSWORD", "")
-        )
-
-        # server_url: catalog > .env > canonical default.
-        server_url = (
-            catalog_vw.get("server_url", "")
-            or env_creds.get("VAULTWARDEN__SERVERURL", "")
-            or "https://bitwarden.bruj0.net"
-        )
-
-        # email: catalog > .env (read via the WP11
-        # canonical parser) > canonical operator
-        # account. The pre-WP11 shape had an inline
-        # `.env` scan here; WP11 routes the lookup
-        # through `BaseApp._load_dotenv` for the same
-        # behaviour.
-        from .base import BaseApp
-
-        dotenv = BaseApp._load_dotenv(repo_root)
-        dotenv_email = next(
-            (
-                v
-                for k, v in dotenv.items()
-                if k.strip().lower() in ("client_email", "email")
-            ),
-            "",
-        )
-        email = (
-            catalog_vw.get("email", "")
-            or dotenv_email
-            or "secrets@bruj0.net"
-        )
-
-        return {
-            "master_password": master_password,
-            "server_url": server_url,
-            "email": email,
-        }
-
     def _ensure_cluster_admin_secret(
         self, ctx: Container, kubectl: KubectlRunner, password: str
     ) -> None:
@@ -675,6 +605,13 @@ class GiteaApp(BaseApp):
         the cluster Secret back to that value within one sync
         interval (~30s).
 
+        WP12 — thin wrapper over `BaseApp._vaultwarden_client`
+        + `BaseApp._seed_vaultwarden_note`. The heavy lifting
+        (kubectl.get for VKS BW_CLIENTID/BW_CLIENTSECRET,
+        VaultwardenClient.login, idempotent dedup via
+        list_ciphers) lives on `BaseApp`; this method only
+        supplies the gitea-specific note_name + VKS triple.
+
         Hard-fails on Vaultwarden unreachable: the operator's
         contract is "VW must be working before any app can
         install". Returns silently if a cipher with the same
@@ -697,169 +634,17 @@ class GiteaApp(BaseApp):
             )
             return
 
-        # 1. Read VKS's BW_CLIENTID + BW_CLIENTSECRET from the
-        #    in-cluster Secret via the same kubectl runner the
-        #    rest of apply() uses (so tests can mock it through
-        #    ctx.kubectl). cloudflared uses raw subprocess here
-        #    but the only thing the runner adds over subprocess
-        #    is mockability + audit logging, both of which
-        #    matter for an orchestrator that runs in CI.
-        kubectl = self._kubectl(ctx)
-        client_id_proc = kubectl.get(
-            resource="secret",
-            name="vaultwarden-kubernetes-secrets",
-            namespace="vaultwarden-kubernetes-secrets",
-            jsonpath="{.data.BW_CLIENTID}",
-        )
-        client_secret_proc = kubectl.get(
-            resource="secret",
-            name="vaultwarden-kubernetes-secrets",
-            namespace="vaultwarden-kubernetes-secrets",
-            jsonpath="{.data.BW_CLIENTSECRET}",
-        )
-        if (
-            client_id_proc.returncode != 0
-            or client_secret_proc.returncode != 0
-        ):
-            raise RuntimeError(
-                f"cannot seed gitea admin password without "
-                f"VaultwardenK8sSync's BW_CLIENTID/BW_CLIENTSECRET "
-                f"in cluster namespace vaultwarden-kubernetes-secrets; "
-                f"kubectl get failed: rc={client_id_proc.returncode} "
-                f"stderr={client_id_proc.stderr.strip()[:200]}. The "
-                f"vaultwarden-k8s-sync app must be applied (and healthy) "
-                f"before gitea; see "
-                f"docs/runbooks/setup-vaultwarden-sync.md."
-            )
-        try:
-            client_id = base64.b64decode(
-                client_id_proc.stdout.strip()
-            ).decode("utf-8")
-            client_secret = base64.b64decode(
-                client_secret_proc.stdout.strip()
-            ).decode("utf-8")
-        except Exception as e:
-            raise RuntimeError(
-                f"failed to base64-decode VaultwardenK8sSync "
-                f"BW_CLIENTID/BW_CLIENTSECRET: {e}"
-            ) from e
-
-        # 2. Read the master password + email + server_url
-        #    from the operator's .env (canonical
-        #    orchestrator-side location for credentials the
-        #    apply path needs at runtime; gitignored). The
-        #    .env parser lives on VaultwardenK8sSyncApp
-        #    because VKS owns the .env contract — we
-        #    piggyback on it instead of re-parsing so the
-        #    key-alias map stays in one place. The catalog
-        #    is a co-equal source: a value in
-        #    catalog.vaultwarden.{server_url,email} wins
-        #    over .env; an empty .env falls back to the
-        #    catalog; both empty falls back to the canonical
-        #    hard-coded default that the seed-note CLI uses.
-        #    No /tmp/vw.pw fallback — the operator's .env
-        #    is the only sanctioned location now.
-        from provisioner.lib.vaultwarden import (
-            VaultwardenClient,
-            build_secure_note_payload,
-            vks_triple,
-        )
-
-        creds = self._read_dotenv_creds(ctx.repo_root, catalog)
-        master_password = creds["master_password"]
-        server_url = creds["server_url"]
-        email = creds["email"]
-
-        if not master_password:
-            raise RuntimeError(
-                "VAULTWARDEN__MASTERPASSWORD missing from .env; "
-                "the orchestrator's contract is that Vaultwarden "
-                "must be working before any app can install. Add "
-                "VAULTWARDEN__MASTERPASSWORD=<pw> to "
-                f"{ctx.repo_root / '.env'} (gitignored, mode 0600 "
-                "is the orchestrator's convention). The "
-                "vaultwarden-k8s-sync app reads from the same "
-                "key — see "
-                "docs/runbooks/setup-vaultwarden-sync.md."
-            )
-
-        # 3. Authenticate + push the note. Wrapped in
-        #    try/except so a Vaultwarden-side failure
-        #    (wrong master pw, 5xx, network) translates to
-        #    a single RuntimeError with a clear "VW must be
-        #    working" message — the operator's contract.
-        try:
-            client = VaultwardenClient.login(
-                server_url=server_url,
-                client_id=client_id,
-                client_secret=client_secret,
-                email=email,
-                master_password=master_password,
-            )
-            master_password = ""  # overwrite; not strictly
-            # safe in CPython but matches the cloudflared
-            # pattern (the string was short-lived).
-
-            # 4. Idempotency dedup: list ciphers first; skip
-            #    POST if a cipher already carries the VKS
-            #    triple (namespaces=gitea,
-            #    secret-name=gitea-admin-password,
-            #    secret-key=password). Without this guard
-            #    every apply would create a new cipher and
-            #    VKS would arbitrate among them.
-            existing = client.list_ciphers()
-            already_seeded = False
-            for c in existing:
-                triple: dict[str, str] = {}
-                fields = c.get("fields") or []
-                for i in range(len(fields)):
-                    try:
-                        k = client.decrypt_cipher_field_name(c, index=i)
-                        triple[k] = client.decrypt_cipher_field(c, name=k)
-                    except Exception:
-                        continue
-                if (
-                    triple.get("namespaces") == self.namespace
-                    and triple.get("secret-name") == ADMIN_SECRET_NAME
-                    and triple.get("secret-key") == "password"
-                ):
-                    already_seeded = True
-                    break
-            if already_seeded:
-                ctx.logger.info(
-                    "gitea.admin_vaultwarden_skipped",
-                    reason="cipher with matching VKS triple already exists",
-                    namespace=self.namespace,
-                    secret_name=ADMIN_SECRET_NAME,
-                    secret_key="password",
-                )
-                return
-
-            payload = build_secure_note_payload(
-                note_name="gitea k8s admin password",
-                body_text=password,
-                custom_fields=vks_triple(
-                    namespace=self.namespace,
-                    secret_name=ADMIN_SECRET_NAME,
-                    secret_key="password",
-                ),
-                user_key=client.user_key,
-            )
-            client.create_cipher(payload)
-        except Exception as e:
-            raise RuntimeError(
-                f"cannot seed gitea admin password to Vaultwarden: "
-                f"{type(e).__name__}: {e}. The orchestrator's "
-                f"contract is 'Vaultwarden must be working before "
-                f"any app can install'. See "
-                f"docs/runbooks/setup-vaultwarden-sync.md."
-            ) from e
-
-        ctx.logger.info(
-            "gitea.admin_vaultwarden_seeded",
+        client = BaseApp._vaultwarden_client(ctx, catalog)
+        BaseApp._seed_vaultwarden_note(
+            ctx,
+            client,
+            catalog,
+            note_name="gitea k8s admin password",
+            body_text=password,
             namespace=self.namespace,
             secret_name=ADMIN_SECRET_NAME,
             secret_key="password",
+            app_short="gitea",
         )
 
     # `_kubeconfig` and `_current_cluster` moved to

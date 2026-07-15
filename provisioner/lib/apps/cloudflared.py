@@ -143,11 +143,9 @@ create-remote-tunnel-api/
 
 from __future__ import annotations
 
-import base64
 import json
 import os
 import ssl
-import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -823,62 +821,7 @@ class CloudflaredApp(BaseApp):
 
     # ---------- Vaultwarden sync-side note ----------
 
-    @staticmethod
-    def _read_dotenv_creds(
-        repo_root: Path, catalog: dict[str, Any]
-    ) -> dict[str, str]:
-        """Resolve master_password + server_url + email
-        from catalog.yaml + .env, in catalog > .env >
-        canonical-defaults precedence. Mirrors GiteaApp
-        identically; both apps read from the same .env
-        contract (canonical key ``VAULTWARDEN__MASTERPASSWORD``).
-
-        The .env parser is owned by VaultwardenK8sSyncApp
-        (the VKS Secret contract is the system of record
-        for Vaultwarden login knobs); this method just
-        wraps it with catalog-aliasing. Static so tests
-        can pin each precedence rule in isolation.
-        """
-        from .vaultwarden_k8s_sync import VaultwardenK8sSyncApp
-
-        env_creds = VaultwardenK8sSyncApp._load_dotenv(repo_root)
-        catalog_vw = catalog.get("vaultwarden", {}) or {}
-
-        master_password = (
-            catalog_vw.get("master_password", "")
-            or env_creds.get("VAULTWARDEN__MASTERPASSWORD", "")
-        )
-
-        server_url = (
-            catalog_vw.get("server_url", "")
-            or env_creds.get("VAULTWARDEN__SERVERURL", "")
-            or "https://bitwarden.bruj0.net"
-        )
-
-        dotenv_email = ""
-        env_path = repo_root / ".env"
-        if env_path.exists():
-            for raw in env_path.read_text().splitlines():
-                line = raw.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, _, v = line.partition("=")
-                if k.strip().lower() in ("client_email", "email"):
-                    dotenv_email = v.strip().strip('"').strip("'")
-                    break
-        email = (
-            catalog_vw.get("email", "")
-            or dotenv_email
-            or "secrets@bruj0.net"
-        )
-
-        return {
-            "master_password": master_password,
-            "server_url": server_url,
-            "email": email,
-        }
-
-    def _seed_vaultwarden_note(
+    def _seed_tunnel_token_vaultwarden_note(
         self,
         ctx: Container,
         tunnel_token: str,
@@ -889,65 +832,27 @@ class CloudflaredApp(BaseApp):
         chart-managed `cloudflare-tunnel-remote` Secret if
         helm ever deletes it (e.g. on tofu destroy + apply).
 
-        Re-runs are no-op (the library call is idempotent on
-        app+namespace+secret-name+secret-key — the orchestrator
-        calls ``list_ciphers`` first to confirm the note
-        exists; if it does, this step is a no-op rather than
-        a duplicate POST).
+        WP12 — thin wrapper over
+        `BaseApp._vaultwarden_client` +
+        `BaseApp._seed_vaultwarden_note`. Re-runs are
+        no-op (the canonical helper's `list_ciphers` first
+        short-circuits a matching triple).
+
+        Renamed from `_seed_vaultwarden_note` in WP12 to
+        avoid a name clash with `BaseApp._seed_vaultwarden_note`
+        (different signature: instance method with
+        `tunnel_token` here, `@staticmethod` on `BaseApp`).
 
         Failure is non-fatal — the helm install still owns
         the Secret at apply-time, and VKS will pick the
         note up within one sync interval (~5 min) after
-        destroy.
+        destroy. Cloudflared is the only app where this
+        seed step is best-effort; the orchestrator never
+        aborts the apply if Vaultwarden is unreachable.
         """
-        # Read the in-cluster VKS Secret (BW_CLIENTID +
-        # BW_CLIENTSECRET) via kubectl so we can authenticate
-        # against Vaultwarden. Done in-process via the
-        # existing KubectlRunner so the orchestrator stays
-        # the single source of truth for cluster access.
         try:
-            kubeconfig_path = (
-                ctx.proxmox_k3s_repo
-                / "infra"
-                / "clusters"
-                / "cicd"
-                / "kubeconfig.yaml"
-            )
-            client_id_proc = subprocess.run(
-                [
-                    "kubectl",
-                    f"--kubeconfig={kubeconfig_path}",
-                    "-n",
-                    "vaultwarden-kubernetes-secrets",
-                    "get",
-                    "secret",
-                    "vaultwarden-kubernetes-secrets",
-                    "-o",
-                    "jsonpath={.data.BW_CLIENTID}",
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=10.0,
-            )
-            client_secret_proc = subprocess.run(
-                [
-                    "kubectl",
-                    f"--kubeconfig={kubeconfig_path}",
-                    "-n",
-                    "vaultwarden-kubernetes-secrets",
-                    "get",
-                    "secret",
-                    "vaultwarden-kubernetes-secrets",
-                    "-o",
-                    "jsonpath={.data.BW_CLIENTSECRET}",
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=10.0,
-            )
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            client = BaseApp._vaultwarden_client(ctx, catalog)
+        except Exception as e:
             ctx.logger.warn(
                 "cloudflared.vws_seed_unavailable",
                 error=str(e),
@@ -959,99 +864,18 @@ class CloudflaredApp(BaseApp):
             )
             return
 
-        client_id = base64.b64decode(client_id_proc.stdout.strip()).decode("utf-8")
-        client_secret = base64.b64decode(client_secret_proc.stdout.strip()).decode("utf-8")
-
-        # Read the master password from the operator's .env
-        # via the same helper gitea.py / gitea_runner.py
-        # use. The file is mode 0600 owned by the user
-        # running cicdctl. There is intentionally no
-        # /tmp/vw.pw fallback — the orchestrator contract is
-        # that Vaultwarden credentials live in .env only,
-        # never in cluster Secrets or other hosts files.
-        creds = self._read_dotenv_creds(ctx.repo_root, catalog)
-        master_password = creds["master_password"]
-        if not master_password:
-            ctx.logger.warn(
-                "cloudflared.vws_seed_no_master_password",
-                resolution=(
-                    "VAULTWARDEN__MASTERPASSWORD missing from "
-                    f"{ctx.repo_root / '.env'}; cloudflared "
-                    "still works without VKS sync (helm owns "
-                    "the Secret directly). Add the key and "
-                    "re-run if you want the tunnel token "
-                    "live-synchronized from Vaultwarden."
-                ),
-            )
-            return
-
-        # Authenticate + push the note via the library.
         try:
-            from provisioner.lib.vaultwarden import (
-                VaultwardenClient,
-                build_secure_note_payload,
-                vks_triple,
-            )
-            client = VaultwardenClient.login(
-                server_url="https://bitwarden.bruj0.net",
-                client_id=client_id,
-                client_secret=client_secret,
-                email="secrets@bruj0.net",
-                master_password=master_password,
-            )
-            master_password = ""  # overwrite
-            payload = build_secure_note_payload(
+            BaseApp._seed_vaultwarden_note(
+                ctx,
+                client,
+                catalog,
                 note_name=f"{VWS_NOTE_APP} k8s secret value",
                 body_text=tunnel_token,
-                custom_fields=vks_triple(
-                    namespace=VWS_NOTE_NAMESPACE,
-                    secret_name=VWS_NOTE_SECRET_NAME,
-                    secret_key=VWS_NOTE_SECRET_KEY,
-                ),
-                user_key=client.user_key,
+                namespace=VWS_NOTE_NAMESPACE,
+                secret_name=VWS_NOTE_SECRET_NAME,
+                secret_key=VWS_NOTE_SECRET_KEY,
+                app_short="cloudflared",
             )
-            # Idempotency guard: VKS uses the
-            # ``namespaces``/``secret-name``/``secret-key``
-            # triple as the Secret primary key, so VKS will
-            # happily serve the existing Secret from any one
-            # of N ciphers sharing the same triple. But the
-            # orchestrator's job is to leave ONE canonical
-            # cipher per (app, namespace, secret) — anything
-            # else is noise that drifts in subsequent
-            # web-UI edits. The 2026-07-14 vault audit found
-            # 4 cloudflared ciphers from back-to-back
-            # ``cicdctl apply cicd`` runs because this guard
-            # was missing. List first, skip the POST when a
-            # cipher with the same triple is already present.
-            existing = client.list_ciphers()
-            already_seeded = False
-            for c in existing:
-                triple: dict[str, str] = {}
-                fields = c.get("fields") or []
-                for i in range(len(fields)):
-                    try:
-                        k = client.decrypt_cipher_field_name(c, index=i)
-                        triple[k] = client.decrypt_cipher_field(c, name=k)
-                    except Exception:
-                        continue
-                if (
-                    triple.get("namespaces") == VWS_NOTE_NAMESPACE
-                    and triple.get("secret-name") == VWS_NOTE_SECRET_NAME
-                    and triple.get("secret-key") == VWS_NOTE_SECRET_KEY
-                ):
-                    already_seeded = True
-                    break
-            if already_seeded:
-                ctx.logger.info(
-                    "cloudflared.vws_seed_skipped",
-                    app=VWS_NOTE_APP,
-                    namespace=VWS_NOTE_NAMESPACE,
-                    secret_name=VWS_NOTE_SECRET_NAME,
-                    secret_key=VWS_NOTE_SECRET_KEY,
-                    reason="cipher with matching VKS triple already exists",
-                )
-                return
-            client.create_cipher(payload)
         except Exception as e:
             ctx.logger.warn(
                 "cloudflared.vws_seed_failed",
@@ -1063,14 +887,6 @@ class CloudflaredApp(BaseApp):
                 ),
             )
             return
-
-        ctx.logger.info(
-            "cloudflared.vws_seed_ok",
-            app=VWS_NOTE_APP,
-            namespace=VWS_NOTE_NAMESPACE,
-            secret_name=VWS_NOTE_SECRET_NAME,
-            secret_key=VWS_NOTE_SECRET_KEY,
-        )
 
     # ---------- plan / apply / status / destroy ----------
 
@@ -1231,7 +1047,7 @@ class CloudflaredApp(BaseApp):
         # 6. Seed the tunnel token into Vaultwarden so
         #    VKS can recreate the chart-managed Secret
         #    after a destroy. Failure is non-fatal here.
-        self._seed_vaultwarden_note(ctx, tunnel_token, catalog)
+        self._seed_tunnel_token_vaultwarden_note(ctx, tunnel_token, catalog)
 
         # 7. helm install / upgrade against the vendored
         #    upstream chart. We pass the .tgz path

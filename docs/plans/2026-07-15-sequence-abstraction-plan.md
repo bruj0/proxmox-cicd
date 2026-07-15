@@ -1796,7 +1796,7 @@ asserts the same thing programmatically across
   private `_parse_dotenv`. Forward-compat guard
   for future contributors.
 
-### WP12 — Vaultwarden Secure Note seeding consolidation
+### WP12 — Vaultwarden Secure Note seeding consolidation ✅ (landed 2026-07-15)
 
 Three apps push Secure Notes into Vaultwarden. WP12
 moves the canonical implementation to `BaseApp`.
@@ -2183,6 +2183,42 @@ lands on the canonical tests.
 Tests: +3 (`test_orchestrator_regression_guards.py`).
 305 total passing. Ruff + mypy (strict) clean.
 
+### WP12 implementation note (landed 2026-07-15)
+
+WP12 landed in one commit (full migration):
+
+  * `BaseApp._read_dotenv_creds(repo_root, catalog)`
+    consolidates the two near-identical copies in
+    `GiteaApp` and `CloudflareApp`.
+  * `BaseApp._vaultwarden_client(ctx, catalog)`
+    absorbs the BW_CLIENTID/BW_CLIENTSECRET decode
+    + .env creds + `VaultwardenClient.login(...)`
+    flow that lived inline in three apps.
+  * `BaseApp._seed_vaultwarden_note(...)` is the
+    canonical "find-or-create VKS-triple cipher"
+    dance with `app_short=<name>` audit-log
+    parameter for the per-app event shape.
+  * `CloudflareApp._seed_vaultwarden_note` was
+    renamed to `_seed_tunnel_token_vaultwarden_note`
+    to avoid a name-clash with the canonical helper
+    (mypy would otherwise complain about override
+    signature compatibility).
+  * `tests/test_base_app_vaultwarden.py` (9 tests):
+    covers `_read_dotenv_creds`, `_vaultwarden_client`,
+    `_seed_vaultwarden_note` (all three branches:
+    create, no-op, update), plus the audit-log event.
+  * `tests/test_apps_no_inline_vaultwarden_client.py`
+    is a static guard (AST-based) that scans
+    `apps/*.py` for `VaultwardenClient` imports
+    outside docstrings.
+
+Net LOC: -320 across the four apps + base.py; base.py
+grew by ~150 LOC for the three helpers + ClassVars.
+
+Tests: +10 (test_base_app_vaultwarden.py × 9 +
+test_apps_no_inline_vaultwarden_client.py × 1).
+315 total passing. Ruff + mypy (strict) clean.
+
 ### WP10 implementation note (landed 2026-07-15)
 
 WP10 was scoped narrower than its plan section
@@ -2413,7 +2449,7 @@ follow-up WP15-item; the runtime is unchanged.
   `tests/test_base_app_dotenv.py` covers the seven
   parsing edge cases · ruff clean · mypy strict clean.
 
-### WP12 acceptance (Vaultwarden seed consolidation)
+### WP12 acceptance (Vaultwarden seed consolidation) — met ✅ 2026-07-15
 
 - `BaseApp._vaultwarden_client(ctx, catalog)` and
   `BaseApp._seed_vaultwarden_note(...)` exist in
