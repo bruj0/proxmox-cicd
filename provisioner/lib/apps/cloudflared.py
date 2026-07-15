@@ -248,51 +248,19 @@ class CloudflaredApp(BaseApp):
         return f"gitea.{base}"
 
     # ---------- .env parsing ----------
-
-    @staticmethod
-    def _parse_dotenv(text: str) -> dict[str, str]:
-        """Best-effort parse of KEY=value lines. Mirrors the
-        vaultwarden_k8s_sync._load_dotenv pattern: no
-        python-dotenv dep, comments + blanks + quotes handled.
-        """
-        result: dict[str, str] = {}
-        for line in text.splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#"):
-                continue
-            if "=" not in stripped:
-                continue
-            key, _, value = stripped.partition("=")
-            key = key.strip()
-            value = value.strip()
-            if not key:
-                continue
-            if (value.startswith('"') and value.endswith('"')) or (
-                value.startswith("'") and value.endswith("'")
-            ):
-                value = value[1:-1]
-            result[key] = value
-        return result
-
-    def _load_dotenv(self, repo_root: Path) -> dict[str, str]:
-        path = repo_root / ".env"
-        if not path.exists():
-            return {}
-        try:
-            return self._parse_dotenv(path.read_text())
-        except OSError:
-            return {}
-
-    @staticmethod
-    def _require_env(env: dict[str, str], key: str) -> str:
-        value = env.get(key)
-        if value is None or not value.strip():
-            raise RuntimeError(
-                f"missing required .env value {key!r}. "
-                f"Set it in .env next to the proxmox-cicd "
-                f"repo root or run setup."
-            )
-        return value.strip()
+    #
+    # WP11 — `_parse_dotenv`, `_load_dotenv`, and
+    # `_require_env` are inherited from `BaseApp`. The
+    # three pre-WP11 helpers that lived here (and the
+    # near-identical copies on `VaultwardenK8sSyncApp`
+    # and `GiteaApp`) all followed the same `.env`
+    # convention; centralizing on `BaseApp` stops the
+    # three implementations from drifting apart.
+    # Callers that previously read `_parse_dotenv`,
+    # `_load_dotenv`, or `_require_env` continue to
+    # call `self._load_dotenv(...)` and
+    # `self._require_env(...)` — both names resolve to
+    # `BaseApp`'s versions at runtime.
 
     # ---------- Cloudflare HTTP wrapper ----------
 

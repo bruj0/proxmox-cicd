@@ -421,10 +421,10 @@ class VaultwardenK8sSyncApp(BaseApp):
             VAULTWARDEN_URL /
             BITWARDEN_URL                    -> VAULTWARDEN__SERVERURL
 
-        We parse with stdlib only (no python-dotenv dep). Format
-        is a one-per-line KEY=VALUE pair (no quoting/escape
-        handling beyond stripping leading/trailing whitespace
-        and quotes).
+        WP11 — raw parsing delegates to
+        `BaseApp._load_dotenv` so the parser stays
+        generic; this method applies the VKS alias map
+        on top of the parser's raw output.
         """
         env_path = repo_root / ".env"
         out: dict[str, str] = {
@@ -448,19 +448,31 @@ class VaultwardenK8sSyncApp(BaseApp):
             "vaultwarden_url": "VAULTWARDEN__SERVERURL",
             "bitwarden_url": "VAULTWARDEN__SERVERURL",
         }
-        for raw in env_path.read_text().splitlines():
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            key = key.strip().lower()
-            value = value.strip().strip('"').strip("'")
-            canonical = key_aliases.get(key)
+        # WP11 — use the canonical parser, then map
+        # each surfaced key through the VKS alias map.
+        raw = VaultwardenK8sSyncApp._raw_dotenv(env_path)
+        for raw_key, raw_value in raw.items():
+            canonical = key_aliases.get(raw_key.strip().lower())
             if canonical is not None:
-                out[canonical] = value
+                out[canonical] = raw_value
         return out
+
+    @staticmethod
+    def _raw_dotenv(path: Path) -> dict[str, str]:
+        """Read `<path>` and parse via the canonical
+        `BaseApp._load_dotenv`.
+
+        Internal — used by `_load_dotenv` to keep the
+        alias map focused on key normalization rather
+        than parsing. Stays a staticmethod so the
+        existing cross-app callers
+        (`CloudflareTunnel._read_dotenv_creds`,
+        `GiteaApp._read_dotenv_creds`, and
+        `GiteaRunnerApp`) keep their
+        `VaultwardenK8sSyncApp._load_dotenv(...)`
+        call site unchanged.
+        """
+        return BaseApp._load_dotenv(path.parent)
 
     @staticmethod
     def _render_values(

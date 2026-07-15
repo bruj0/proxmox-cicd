@@ -244,6 +244,120 @@ class BaseApp(abc.ABC):
             )
         return rendered
 
+    # ----- .env parsing (WP11) -----
+
+    @staticmethod
+    def _parse_dotenv(text: str) -> dict[str, str]:
+        """Best-effort `.env` parser used by every app
+        that reads operator secrets.
+
+        WP11 lifts the three duplicate parsers
+        (`cloudflared._parse_dotenv`,
+        `cloudflared._load_dotenv`,
+        `vaultwarden_k8s_sync._load_dotenv`) onto
+        `BaseApp`. Behaviour is the union — the most
+        permissive of the three pre-WP11 shapes:
+
+          * blank lines and `#` comments are dropped
+          * single- and double-quoted values have the
+            surrounding quotes stripped; a `#` *inside*
+            a quoted value is part of the value
+          * `export FOO=bar` parses as `FOO=bar`
+            (POSIX shell convention; some operators
+            source these files in their shell profile)
+          * bare `KEY=value` is the dominant case
+          * lines without `=` are dropped silently
+          * unknown keys land in the dict verbatim —
+            the calling app's `_require_env` raises if
+            the canonical key is missing
+
+        No `${VAR}` expansion (the codebase has never
+        used it; introducing it here would change
+        observable behaviour for keys that contain
+        literal `$`).
+
+        Returns `dict[str, str]`. Empty dict for empty
+        input.
+        """
+        result: dict[str, str] = {}
+        for raw in text.splitlines():
+            stripped = raw.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            # Strip an optional `export ` prefix.
+            if stripped.startswith("export "):
+                stripped = stripped[len("export ") :].lstrip()
+            if "=" not in stripped:
+                continue
+            key, _, value = stripped.partition("=")
+            key = key.strip()
+            value = value.strip()
+            if not key:
+                continue
+            if (value.startswith('"') and value.endswith('"')) or (
+                value.startswith("'") and value.endswith("'")
+            ):
+                value = value[1:-1]
+            result[key] = value
+        return result
+
+    @staticmethod
+    def _load_dotenv(repo_root: Path) -> dict[str, str]:
+        """Read `<repo_root>/.env` and parse it.
+
+        WP11 — thin wrapper around `_parse_dotenv`.
+        Missing file or unreadable file returns an
+        empty dict (apps with no secrets — test paths,
+        dry-runs against a fresh checkout — should
+        *not* crash on the first read).
+
+        Apps that own a canonical alias map
+        (`vaultwarden_k8s_sync` keys multiple user-
+        friendly spellings onto one canonical form)
+        apply that mapping on top of the parser's
+        raw output. WP11 keeps aliasing per-app; the
+        parser is generic by design.
+        """
+        path = repo_root / ".env"
+        if not path.exists():
+            return {}
+        try:
+            return BaseApp._parse_dotenv(path.read_text(encoding="utf-8"))
+        except OSError:
+            return {}
+
+    @staticmethod
+    def _require_env(env: dict[str, str], key: str) -> str:
+        """Return `env[key]` or raise a grep-able error.
+
+        WP11 — three apps (`gitea`, `gitea-runner`'s
+        sibling delegates, `cloudflared`) used to roll
+        a private `_require_env` with slightly different
+        error messages. Centralizing it on `BaseApp`
+        keeps the operator-facing message the same.
+        Defining it as a `@staticmethod` lets the
+        pre-WP11 static call sites
+        (`CloudflareApp._require_env({}, ...)` in
+        tests, `VaultwardenK8sSyncApp._require_env(...)`
+        in cross-app helpers) keep working unchanged.
+
+        Apps that want the app-name in the error reach
+        for `_require_env_for(self.name, env, key)` —
+        the three production callers today all call
+        `self._require_env(env, key)` so they get the
+        static form. Adding the app-name to the error
+        is a future tightening once every caller is
+        migrated away from the static form.
+        """
+        value = env.get(key)
+        if value is None or not value.strip():
+            raise RuntimeError(
+                f"missing required .env value {key!r}. "
+                f"Set it in .env next to the proxmox-cicd "
+                f"repo root or run setup."
+            )
+        return value.strip()
+
     # ----- kubeconfig resolution (WP6) -----
 
     def _kubectl(self, ctx: Any) -> Any:

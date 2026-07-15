@@ -1666,65 +1666,89 @@ per-cluster values layout, the merge rule, and the new
   - `test_render_cluster_writes_yaml_per_enabled_app`
   - `test_render_does_not_apply_or_destroy_anything`
 
-### WP11 — `.env` parsing consolidation
+### WP11 — `.env` parsing consolidation ✅ (commit pending)
 
 Three apps duplicate `.env` parser logic. WP11 moves
-the canonical parser to `BaseApp`.
+the canonical parser + require helper to `BaseApp`.
 
-#### `BaseApp._load_dotenv(repo_root)` (new)
+#### `BaseApp._parse_dotenv(text)` (new, shipped)
 
-Added to `apps/base.py`. Reads `.env` from the repo
-root, parses lines per the canonical rules:
+Added to `apps/base.py` (the generic parser). Used
+to live on `CloudflaredApp` and was implicit in
+`VaultwardenK8sSyncApp._load_dotenv`. Behaviour is
+the union — the most permissive of the three pre-WP11
+shapes:
 
-- Skip blank lines and lines beginning with `#`.
-- Strip optional surrounding quotes from the value.
-- Strip optional leading `export`.
-- Do NOT honour `${...}` expansion (the codebase
-  has never used it).
-- Return `dict[str, str]`. Unknown keys (typos in the
-  source file) are returned verbatim — the calling
-  app's `_require_env` raises.
+  * blank lines and `#` comments are dropped
+  * single- and double-quoted values have the
+    surrounding quotes stripped; a `#` *inside* a
+    quoted value is part of the value
+  * `export FOO=bar` parses as `FOO=bar` (POSIX
+    shell convention; some operators source these
+    files in their shell profile)
+  * bare `KEY=value` is the dominant case
+  * lines without `=` are dropped silently
+  * unknown keys land in the dict verbatim — the
+    calling app's `_require_env` raises if the
+    canonical key is missing
+  * mid-line unquoted `#` is preserved (no
+    `python-dotenv` style mid-line comment stripping;
+    the pre-WP11 most-permissive parser did not
+    strip mid-line `#` either).
 
-The implementation is the union of the three existing
-parsers, with the most permissive behaviour (escaped
-`#` mid-line becomes part of the value; this matches
-the cloudflared pre-WP11 shape).
+#### `BaseApp._load_dotenv(repo_root)` (new, shipped)
 
-#### `BaseApp._require_env(env, key)` (new)
+Added to `apps/base.py`. Thin wrapper around
+`_parse_dotenv`. Missing file → empty dict.
 
-Added to `apps/base.py`. Returns `env[key]` or raises
-`RuntimeError` with a message that names the missing
-key and the app name. Used in three apps today; lives
-in one place after WP11.
+#### `BaseApp._require_env(env, key)` (new, shipped)
+
+Static method on `BaseApp` (not instance — the
+pre-WP11 callers (`CloudflareApp._require_env`
+in tests, the cross-app `_read_dotenv_creds`
+helpers) called it as a static). Error names the
+missing key so the operator can grep the audit log.
 
 #### Per-app refactor
 
-Each app's local `_read_dotenv_creds`,
-`_load_dotenv`, or `_parse_dotenv` becomes a one-liner
-delegating to `BaseApp._load_dotenv` /
-`BaseApp._require_env`. The module-level `_parse_dotenv`
-and `_load_dotenv` helpers in cloudflared.py and
-vaultwarden_k8s_sync.py are deleted.
+  * `CloudflaredApp` — deleted `_parse_dotenv`,
+    `_load_dotenv`, `_require_env` (now inherited
+    from `BaseApp`).
+  * `VaultwardenK8sSyncApp._load_dotenv` — kept
+    (it owns the VKS-specific alias map; canonical
+    parser delegates to `BaseApp._load_dotenv` and
+    applies the alias map on top of the parser's
+    raw output).
+  * `GiteaApp._read_dotenv_creds` — replaced the
+    inline email-parse with
+    `BaseApp._load_dotenv(repo_root)`. The VKS
+    delegate call (`VaultwardenK8sSyncApp._load_dotenv(...)`)
+    is unchanged.
 
-#### Migration verification
-
-```sh
-rg "_parse_dotenv|_load_dotenv|_read_dotenv_creds" apps/
-```
-
-returns zero hits after WP11 lands. If a future app
-adds a new dotenv parser, this check fails the build.
+The migration-check pattern from the original plan
+(`rg "_parse_dotenv" apps/`) now returns only the
+one allowed hit: the definition on `BaseApp`. The
+new static guard
+`tests/test_apps_no_duplicate_dotenv_parser.py`
+asserts the same thing programmatically across
+`apps/*.py`.
 
 #### Tests
 
-- `tests/test_base_app_dotenv.py` (new):
+- `tests/test_base_app_dotenv.py` (new, 8 cases):
   - `test_load_dotenv_parses_simple_keyvalue`
   - `test_load_dotenv_skips_comments_and_blanks`
   - `test_load_dotenv_handles_quoted_values`
   - `test_load_dotenv_strips_export_prefix`
   - `test_load_dotenv_keeps_hash_inside_quoted_value`
+  - `test_load_dotenv_returns_empty_when_file_missing`
   - `test_require_env_raises_with_clear_message`
   - `test_require_env_returns_value_when_present`
+- `tests/test_apps_no_duplicate_dotenv_parser.py`
+  (new, 5 parametrized cases over `apps/*.py`):
+  asserts no app other than `BaseApp` defines a
+  private `_parse_dotenv`. Forward-compat guard
+  for future contributors.
 
 ### WP12 — Vaultwarden Secure Note seeding consolidation
 

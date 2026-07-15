@@ -561,20 +561,23 @@ class GiteaApp(BaseApp):
             or "https://bitwarden.bruj0.net"
         )
 
-        # email: catalog > .env (read inline because
-        # client_email isn't in VKS's alias map) > canonical
-        # operator account.
-        dotenv_email = ""
-        env_path = repo_root / ".env"
-        if env_path.exists():
-            for raw in env_path.read_text().splitlines():
-                line = raw.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, _, v = line.partition("=")
-                if k.strip().lower() in ("client_email", "email"):
-                    dotenv_email = v.strip().strip('"').strip("'")
-                    break
+        # email: catalog > .env (read via the WP11
+        # canonical parser) > canonical operator
+        # account. The pre-WP11 shape had an inline
+        # `.env` scan here; WP11 routes the lookup
+        # through `BaseApp._load_dotenv` for the same
+        # behaviour.
+        from .base import BaseApp
+
+        dotenv = BaseApp._load_dotenv(repo_root)
+        dotenv_email = next(
+            (
+                v
+                for k, v in dotenv.items()
+                if k.strip().lower() in ("client_email", "email")
+            ),
+            "",
+        )
         email = (
             catalog_vw.get("email", "")
             or dotenv_email
