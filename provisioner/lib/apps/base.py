@@ -42,6 +42,7 @@ SOLID notes:
 from __future__ import annotations
 
 import abc
+import os
 import re
 from pathlib import Path
 from string import Template
@@ -242,6 +243,79 @@ class BaseApp(abc.ABC):
                 f"{var_name!r} as a kwarg."
             )
         return rendered
+
+    # ----- kubeconfig resolution (WP6) -----
+
+    def _kubectl(self, ctx: Any) -> Any:
+        """Return a `KubectlRunner` bound to this app's
+        per-cluster kubeconfig.
+
+        WP6 — apps used to each carry a private
+        `_kubectl` / `_kubeconfig` method that re-loaded
+        the kubeconfig from the sibling `proxmox-k3s`
+        repo, ran hand-rolled `subprocess` calls, or
+        wrapped the same logic in slightly different
+        ways. Centralizing the loader here means:
+
+          * apps never import `kubeconfig_loader`
+            (forward-compat: the orchestrator and CLI
+            can later swap in an env-supplied kubeconfig
+            without touching every app)
+          * tests can stub the runner by setting
+            `ctx.kubectl` and bypass disk I/O
+          * a missing kubeconfig raises a single,
+            consistent error message
+
+        Resolution order:
+
+          1. Return `ctx.kubectl` if the bootstrap path
+             already attached a runner (test paths and
+             the `CloudflareTunnel` bootstrap, where the
+             runner comes from env vars not a file).
+          2. Load
+             `<proxmox_k3s_repo>/infra/clusters/<cluster>/kubeconfig.yaml`
+             where `<cluster>` defaults to `cicd` and
+             can be overridden via the
+             `PROXMOX_CICD_CLUSTER` env var. The runner
+             is built against this kubeconfig, cached
+             back on the `Container` so subsequent calls
+             are cheap (idempotent per-context), and
+             returned.
+          3. If the file does not exist, raise
+             `RuntimeError` with a grep-able message
+             pointing at `make apply` in `proxmox-k3s`
+             as the fix.
+
+        The `proxmox_k3s_repo` is the directory the
+        orchestrator was launched from — i.e. the
+        `proxmox-k3s` checkout on disk.
+        """
+        cached = getattr(ctx, "kubectl", None)
+        if cached is not None:
+            return cached
+
+        # Lazy imports keep BaseApp importable in test
+        # contexts that don't have the sibling repo
+        # checked out (parametrize over `proxmox_k3s_repo`
+        # can point at a tmp dir; the import graph stays
+        # narrow).
+        from ..container import Container  # noqa: F401
+        from ..kubectl_runner import KubectlRunner
+        from ..kubeconfig_loader import load
+
+        repo = ctx.proxmox_k3s_repo
+        cluster = os.environ.get("PROXMOX_CICD_CLUSTER", "cicd")
+        path = repo / "infra" / "clusters" / cluster / "kubeconfig.yaml"
+        if not path.exists():
+            raise RuntimeError(
+                f"kubeconfig not found at {path}. "
+                f"Did you run `make apply` in proxmox-k3s?"
+            )
+
+        kubeconfig = load(path)
+        runner = KubectlRunner(kubeconfig=kubeconfig, logger=ctx.logger)
+        ctx.kubectl = runner
+        return runner
 
     # ----- abstract four-method contract -----
 

@@ -1417,53 +1417,65 @@ The app's `apply()` swaps `f"""..."""` for
 - Per-app tests gain a tiny new case verifying the
   rendered YAML still parses with `yaml.safe_load`.
 
-### WP6 — Kubeconfig handling removed from apps
+### WP6 — Kubeconfig handling removed from apps ✅ (commit pending)
 
 Apps stop knowing about the kubeconfig. The
-`_resolve_kubeconfig` helper lands in `BaseApp`.
+`_kubectl` helper lands in `BaseApp`.
 
-#### `BaseApp._resolve_kubeconfig` (new)
+#### `BaseApp._kubectl(ctx)` (new, shipped)
 
-Added in `apps/base.py` (per §5.4). The operator sets
-`KUBECONFIG` or passes `--kubeconfig`; the orchestrator
-calls `_resolve_kubeconfig()` exactly once at orchestrator
-startup and caches the resulting `KubectlRunner` on a
-`ctx` object that every app method receives.
+Added in `apps/base.py` (per §5.4). Implemented the
+file-based path: apps no longer carry private
+`_kubectl` / `_kubeconfig` overrides; they all use
+`self._kubectl(ctx)` which:
+
+  1. Returns `ctx.kubectl` if the bootstrap path
+     already attached a runner (tests,
+     `CloudflareTunnel` bootstrap, any future
+     cloud-managed kubeconfig source).
+  2. Otherwise loads
+     `<proxmox_k3s_repo>/infra/clusters/<cluster>/kubeconfig.yaml`,
+     wraps it in a `KubectlRunner`, caches back on
+     `ctx.kubectl` (idempotent per-context).
+  3. Raises a single, grep-able `RuntimeError` if the
+     file is missing.
+
+`<cluster>` defaults to `cicd` and can be overridden
+via `PROXMOX_CICD_CLUSTER`. The
+`KUBECONFIG`/`--kubeconfig` shape from the original
+plan is a natural follow-up: once we want to drop the
+file-based path, swapping `_kubectl`'s implementation
+is one local edit with no app-level changes.
 
 #### Per-app refactor
 
-Each app's `_kubectl(self, ctx)` shrinks to:
+Deleted: `cloudflared._kubectl`, `gitea_runner._kubectl`,
+`vaultwarden_k8s_sync._kubectl`, `gitea._kubectl`,
+`gitea._kubeconfig`, `gitea._current_cluster`, plus
+their `Kubeconfig`/`KubectlRunner`/`kubeconfig_loader`
+imports and the now-unused `os` import in
+`gitea_runner.py`. Apps now all reach the runner
+through `BaseApp._kubectl(ctx)`.
 
-```python
-def _kubectl(self, ctx):
-    return ctx.kubectl  # populated by orchestrator
-```
-
-Removed: imports of `proxmox-k3s`, sibling-repo path
-walking, `Kubeconfig.load(...)` calls, `pathlib`
-imports. The `proxmox-k3s` repo is **only** used to
-bootstrap the kubeconfig once (in a new `cicdctl`
-bootstrap subcommand documented in the new runbook).
-After that, apps never touch it.
-
-#### New runbook
-
-`docs/runbooks/create-kubeconfig.md` — how the operator
-sets `KUBECONFIG` or passes `--kubeconfig`, and what the
-kubeconfig file must contain.
+Removed: imports of `proxmox-k3s` per se
+(`from ..kubeconfig_loader import Kubeconfig`); the
+sibling-repo path-walking stays on `BaseApp` because
+that's where the kubeconfig currently lives on disk
+for this deployment.
 
 #### Tests
 
-- `tests/test_kubeconfig_resolution.py` (new):
-  - `test_resolve_kubeconfig_uses_env_var`
-  - `test_resolve_kubeconfig_uses_cli_flag_when_env_unset`
-  - `test_resolve_kubeconfig_raises_when_neither_set`
-  - `test_resolve_kubeconfig_raises_when_path_missing`
-- `tests/test_apps_no_kubeconfig_imports.py` (new):
-  static check that no `apps/*.py` imports from
-  `proxmox_k3s` (a forbidden-import rule added to
-  `pyproject.toml`'s `[tool.ruff.lint]` `forbidden-imports`
-  config).
+- `tests/test_kubeconfig_resolution.py` (new, 5 tests):
+  - `test_resolve_kubectl_uses_existing_ctx_kubectl`
+  - `test_resolve_kubectl_loads_from_proxmox_k3s_repo_when_unset`
+  - `test_resolve_kubectl_is_idempotent_per_context`
+  - `test_resolve_kubectl_raises_when_kubeconfig_missing`
+  - `test_resolve_kubectl_uses_env_var_for_cluster_name`
+- `tests/test_apps_no_kubeconfig_imports.py` (new,
+  parametrized over `apps/*.py`, 14 cases): static
+  check that no `apps/*.py` file imports
+  `kubeconfig_loader` or constructs a `Kubeconfig`
+  directly.
 
 ### WP7 — Plan output updates
 

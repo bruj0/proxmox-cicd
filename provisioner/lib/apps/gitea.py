@@ -73,7 +73,6 @@ from pathlib import Path
 from typing import Any
 
 from ..container import Container
-from ..kubeconfig_loader import Kubeconfig
 from ..kubectl_runner import KubectlRunner
 from . import AppApplyResult, AppPlanResult, AppStatus, register
 from .base import BaseApp
@@ -464,16 +463,15 @@ class GiteaApp(BaseApp):
         )
         return result.returncode == 0
 
-    def _kubectl(self, ctx: Container) -> KubectlRunner:
-        """Use the container's bound kubectl if present (tests),
-        otherwise build a production KubectlRunner bound to
-        the sibling proxmox-k3s repo's kubeconfig.yaml.
-        """
-        if ctx.kubectl is not None:
-            return ctx.kubectl
-        kubectl = KubectlRunner(kubeconfig=self._kubeconfig(ctx), logger=ctx.logger)
-        ctx.kubectl = kubectl
-        return kubectl
+    # `_kubectl` and `_kubeconfig` are inherited from
+    # `BaseApp` (WP6). Pre-WP6, gitea split kubeconfig
+    # resolution into two helpers (one building the
+    # `Kubeconfig`, one wrapping it in a `KubectlRunner`)
+    # because the orchestrator didn't always supply a
+    # runner. With the loader centralized on `BaseApp`,
+    # both vanish — `self._kubectl(ctx)` returns the
+    # cached runner when present (test paths), or builds
+    # one from the per-cluster kubeconfig (production).
 
     # ------------------------------------------------------------------ #
     # Admin password lifecycle: /tmp/gitea-admin.pw + cluster Secret    #
@@ -857,20 +855,8 @@ class GiteaApp(BaseApp):
             secret_key="password",
         )
 
-    def _kubeconfig(self, ctx: Container) -> Kubeconfig:
-        from ..kubeconfig_loader import load
-
-        cluster = self._current_cluster(ctx)
-        path = ctx.proxmox_k3s_repo / "infra" / "clusters" / cluster / "kubeconfig.yaml"
-        return load(path)
-
-    def _current_cluster(self, ctx: Container) -> str:
-        # The Container remembers the current cluster via the
-        # orchestrator; for the AppSpec to stay self-contained
-        # we read it from an env var that the orchestrator sets.
-        import os
-
-        return os.environ.get("PROXMOX_CICD_CLUSTER", "cicd")
+    # `_kubeconfig` and `_current_cluster` moved to
+    # `BaseApp._kubectl` (WP6).
 
 
 # Side-effect import: register on import.

@@ -515,30 +515,7 @@ class VaultwardenK8sSyncApp(BaseApp):
         out_path.write_text(text)
         return out_path
 
-    def _kubectl(self, ctx: Container) -> Any:
-        # Late import to avoid a circular dep at module load.
-        from ..kubectl_runner import KubectlRunner
-
-        if ctx.kubectl is not None:
-            return ctx.kubectl
-        from ..kubeconfig_loader import Kubeconfig, load
-        import os
-
-        # Resolve the cluster name from the env var the
-        # orchestrator sets. Falls back to "cicd" so the
-        # AppSpec remains usable from a test fixture.
-        cluster = os.environ.get("PROXMOX_CICD_CLUSTER", "cicd")
-        path = (
-            ctx.proxmox_k3s_repo
-            / "infra"
-            / "clusters"
-            / cluster
-            / "kubeconfig.yaml"
-        )
-        kubeconfig: Kubeconfig = load(path)
-        kubectl = KubectlRunner(kubeconfig=kubeconfig, logger=ctx.logger)
-        ctx.kubectl = kubectl
-        return kubectl
+    # `_kubectl` is inherited from `BaseApp` (WP6).
 
 
 __all__ = [

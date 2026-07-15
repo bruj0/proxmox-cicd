@@ -112,14 +112,12 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
 
 from ..container import Container
-from ..kubectl_runner import KubectlRunner
 from . import AppApplyResult, AppPlanResult, AppStatus, register
 from .base import BaseApp
 
@@ -863,19 +861,7 @@ class GiteaRunnerApp(BaseApp):
             return ""
         return token
 
-    def _kubectl(self, ctx: Container) -> KubectlRunner:
-        if ctx.kubectl is not None:
-            return ctx.kubectl
-        # Production path: build a KubectlRunner from the
-        # sibling proxmox-k3s repo's kubeconfig.yaml.
-        from ..kubeconfig_loader import Kubeconfig, load
-
-        cluster = os.environ.get("PROXMOX_CICD_CLUSTER", "cicd")
-        path = ctx.proxmox_k3s_repo / "infra" / "clusters" / cluster / "kubeconfig.yaml"
-        kubeconfig: Kubeconfig = load(path)
-        kubectl = KubectlRunner(kubeconfig=kubeconfig, logger=ctx.logger)
-        ctx.kubectl = kubectl
-        return kubectl
+    # `_kubectl` is inherited from `BaseApp` (WP6).
 
 
 # Side-effect import: register on import.

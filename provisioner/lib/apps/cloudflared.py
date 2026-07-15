@@ -236,30 +236,11 @@ class CloudflaredApp(BaseApp):
 
     name = "cloudflared"
 
-    # ---------- runner plumbing ----------
-
-    def _kubectl(self, ctx: Container):  # type: ignore[no-untyped-def]
-        # Late import to avoid a circular dep at module load.
-        from ..kubectl_runner import KubectlRunner
-
-        if ctx.kubectl is not None:
-            return ctx.kubectl
-        import os
-
-        from ..kubeconfig_loader import Kubeconfig, load
-
-        cluster = os.environ.get("PROXMOX_CICD_CLUSTER", "cicd")
-        path = (
-            ctx.proxmox_k3s_repo
-            / "infra"
-            / "clusters"
-            / cluster
-            / "kubeconfig.yaml"
-        )
-        kubeconfig: Kubeconfig = load(path)
-        kubectl = KubectlRunner(kubeconfig=kubeconfig, logger=ctx.logger)
-        ctx.kubectl = kubectl
-        return kubectl
+    # `_kubectl` is inherited from `BaseApp` (WP6). Apps
+    # used to each roll a private loader here; centralizing
+    # the resolution on `BaseApp` keeps every app on the
+    # same boot path (with `ctx.kubectl` short-circuit and
+    # a single error message for missing kubeconfig).
 
     def _hostname(self, catalog: dict[str, Any]) -> str:
         ingress = catalog.get("ingress", {})
