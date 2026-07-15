@@ -23,7 +23,15 @@ dist/
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
-
+# Catalog scratch files: tests in
+# provisioner/tests/test_shipped_catalog.py write
+# throwaway shipped.*.yaml / cluster.*.yaml next
+# to provisioner/lib/catalog/shipped.yaml to
+# exercise the parser + merge rule. Don't commit
+# them.
+provisioner/lib/catalog/shipped.*.yaml
+provisioner/lib/catalog/cluster.*.yaml
+!provisioner/lib/catalog/shipped.yaml
 # Provisioner state. Each `infra/clusters/<name>/` directory
 # is operator-local: catalog.yaml + kubeconfig.yaml + apps.json
 # are generated on first apply and never committed. The

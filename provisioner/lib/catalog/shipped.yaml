@@ -1,0 +1,72 @@
+# shipped.yaml — apps this version of proxmox-cicd ships.
+#
+# The orchestrator reads this file at every cicdctl
+# invocation. It is the **single source of truth** for
+# "what apps exist"; a per-cluster catalog.yaml can only
+# enable/disable/override values for apps listed here.
+# An unknown app name in the cluster catalog raises
+# CatalogError (see WP1 acceptance).
+#
+# Editing this file is a code change. It is part of the
+# version contract. The per-cluster catalog.yaml is the
+# only operator-facing catalog surface.
+#
+# Schema:
+#
+#   version:  semver string for the shipped catalog
+#   apps:     mapping of app_name -> ShippedApp shape
+#
+# ShippedApp:
+#
+#   description:     one-line description
+#   namespace:       k8s namespace
+#   release:         helm release name
+#   chart:           chart reference (OCI URL or local path)
+#   chart_version:   pinned chart version (matches
+#                    versions.lock.yaml)
+#   image_version:   pinned image tag (matches
+#                    versions.lock.yaml)
+#
+# Optional keys (added by later WPs):
+#
+#   default_values:       ship-time defaults for `values:` overlay
+#   default_values_file:  path to shipped defaults template
+#                         (added in WP10)
+
+version: "0.3.0"
+
+apps:
+
+  gitea:
+    description: "Self-hosted Git + Actions + Packages."
+    namespace: "gitea"
+    release: "gitea"
+    chart: "oci://docker.gitea.com/charts/gitea"
+    chart_version: "12.0.0"
+    image_version: "1.26.x"
+
+  gitea-runner:
+    description: "Gitea Actions runner (Docker-in-Docker; root flavour)."
+    namespace: "gitea-runner"
+    release: "gitea-runner"
+    # Local chart under infra/charts/gitea-runner; not OCI.
+    chart: "./infra/charts/gitea-runner"
+    chart_version: "0.2.0"
+    image_version: "1.0.8-dind"
+
+  vaultwarden-k8s-sync:
+    description: "Vaultwarden -> Kubernetes Secrets sync (VKS)."
+    namespace: "vaultwarden-kubernetes-secrets"
+    release: "vaultwarden-kubernetes-secrets"
+    chart: "oci://ghcr.io/antoniolago/charts/vaultwarden-kubernetes-secrets"
+    chart_version: "2.0.0"
+    image_version: "2.0.0"
+
+  cloudflared:
+    description: "Cloudflare Tunnel (remotely-managed)."
+    namespace: "cloudflared"
+    release: "cloudflare-tunnel-remote"
+    # Vendored tgz under infra/helm-charts/.
+    chart: "infra/helm-charts/cloudflare-tunnel-remote-0.1.2.tgz"
+    chart_version: "0.1.2"
+    image_version: "2024.8.3"

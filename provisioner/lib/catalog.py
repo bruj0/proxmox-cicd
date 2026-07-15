@@ -31,6 +31,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
 
 
 _DNS_LABEL_RE = re.compile(
@@ -46,6 +47,11 @@ class CatalogError(ValueError):
 class AppConfig:
     enabled: bool = False
     extra: dict[str, str] = field(default_factory=dict)
+    # WP1 added: per-app values overlay. After the merge
+    # against the shipped catalog's `default_values`,
+    # this holds the final per-app config dict. Apps
+    # read it via `catalog.apps[app_name].values`.
+    values: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass
@@ -88,6 +94,272 @@ class Catalog:
                 for name, cfg in self.apps.items()
             },
         }
+
+    @classmethod
+    def from_shipped_and_cluster(
+        cls,
+        shipped: ShippedCatalog,
+        cluster: Catalog,
+    ) -> Catalog:
+        """Build the merged per-cluster catalog from the
+        shipped catalog (single source of truth) plus the
+        operator-edited cluster override layer.
+
+        Merge rule (§5.2):
+
+        - A cluster `apps:<name>.enabled: <bool>` flips
+          the merged catalog's `enabled` flag. Absent ->
+          treated as `False`. Apps not listed in the
+          cluster catalog are absent from the merged
+          catalog's `enabled_app_names()`.
+        - A cluster `apps:<name>.values:` mapping is
+          deep-merged on top of the shipped
+          `default_values:` for the same app.
+        - A cluster reference to an app not in the
+          shipped catalog raises `CatalogError` listing
+          the unknown name(s). The shipped catalog is
+          the only place apps can be defined.
+
+        The returned object preserves all the per-cluster
+        fields (`cluster_name`, `ingress_base_domain`,
+        `vaultwarden_*`). It is the orchestrator's
+        working catalog going forward; the standalone
+        `Catalog` from `load_catalog()` is only an
+        intermediate.
+        """
+        merged_apps: dict[str, AppConfig] = {}
+        unknown: list[str] = []
+
+        # Iterate the **shipped** catalog: every shipped
+        # app gets a slot in the merged catalog, with
+        # `enabled` defaulting to `False`. Apps not
+        # mentioned in the cluster catalog stay disabled.
+        for app_name, shipped_app in shipped.apps.items():
+            cluster_cfg = cluster.apps.get(app_name)
+            if cluster_cfg is None:
+                # Not in cluster catalog -> disabled, no
+                # overlay. Keep the slot so the merged
+                # catalog reflects the full shipped app
+                # set.
+                merged_apps[app_name] = AppConfig(
+                    enabled=False,
+                    extra={},
+                    values=dict(shipped_app.default_values),
+                )
+                continue
+
+            # Cluster opted in (or explicitly disabled).
+            # Either way, we validate the app is known —
+            # because we're iterating shipped.apps, it
+            # always is, but the cluster-only entries
+            # surface in the next loop.
+            merged_values = _deep_merge(
+                dict(shipped_app.default_values),
+                dict(cluster_cfg.values),
+            )
+            merged_apps[app_name] = AppConfig(
+                enabled=cluster_cfg.enabled,
+                extra=dict(cluster_cfg.extra),
+                values=merged_values,
+            )
+
+        # Detect cluster apps not in shipped.
+        for app_name in cluster.apps:
+            if app_name not in shipped.apps:
+                unknown.append(app_name)
+        if unknown:
+            raise CatalogError(
+                f"per-cluster catalog references unknown "
+                f"app(s) {sorted(unknown)}; the shipped "
+                f"catalog at {shipped.source_path} (version "
+                f"{shipped.version}) is the single source of "
+                f"truth. Either remove the unknown entries "
+                f"from the per-cluster catalog or extend "
+                f"the shipped catalog."
+            )
+
+        return cls(
+            cluster_name=cluster.cluster_name,
+            apps=merged_apps,
+            ingress_base_domain=cluster.ingress_base_domain,
+            vaultwarden_server_url=cluster.vaultwarden_server_url,
+            vaultwarden_email=cluster.vaultwarden_email,
+            vaultwarden_skip_admin_seed=(
+                cluster.vaultwarden_skip_admin_seed
+            ),
+            vaultwarden_skip_runner_seed=(
+                cluster.vaultwarden_skip_runner_seed
+            ),
+            source_path=cluster.source_path,
+        )
+
+
+# ----- shipped catalog (WP1) -----
+
+
+@dataclass(frozen=True)
+class ShippedApp:
+    """One app the provisioner knows how to install.
+
+    Defined in `provisioner/lib/catalog/shipped.yaml`
+    (committed to the codebase, code-reviewed). A
+    per-cluster catalog.yaml can enable/disable a
+    `ShippedApp` and override values; it cannot
+    introduce an app the shipped catalog doesn't know
+    about. See §5.2.
+    """
+
+    name: str
+    description: str
+    namespace: str
+    release: str
+    chart: str
+    chart_version: str
+    image_version: str
+    # Ship-time defaults for the per-app `values:` overlay.
+    # Populated from `default_values:` in `shipped.yaml`;
+    # missing entries default to an empty dict.
+    default_values: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ShippedCatalog:
+    """The codebase-shipped app catalog.
+
+    Loaded once per orchestrator startup from
+    `provisioner/lib/catalog/shipped.yaml`. The merged
+    per-cluster catalog (see `Catalog.from_shipped_and_cluster`)
+    must only reference apps listed here.
+    """
+
+    version: str
+    apps: dict[str, ShippedApp]
+    source_path: Path | None = None
+
+
+def load_shipped_catalog(path: Path) -> ShippedCatalog:
+    """Load the codebase-shipped catalog from `shipped.yaml`.
+
+    The shipped catalog is the version contract: it lists
+    every app this version of `proxmox-cicd` knows how
+    to install, with namespace / release / chart / version
+    pins. Editing it is a code change. The per-cluster
+    `infra/clusters/<name>/catalog.yaml` becomes a thin
+    enablement + value-override layer on top.
+
+    The shipped YAML has the same narrow-YAML parser
+    constraints as the per-cluster catalog: top-level
+    `version` (string), `apps` (mapping of `app_name` →
+    `ShippedApp` mapping). See `shipped.yaml` for the
+    schema.
+    """
+    if not path.exists():
+        raise CatalogError(
+            f"shipped catalog not found at {path}. "
+            f"WP1 requires provisioner/lib/catalog/shipped.yaml "
+            f"to be committed to the codebase."
+        )
+    text = path.read_text(encoding="utf-8")
+    parsed = _parse_yaml_simple(text)
+
+    version = parsed.get("version", "")
+    if not isinstance(version, str) or not version:
+        raise CatalogError(
+            f"shipped catalog at {path} is missing top-level "
+            f"`version:` (a semver string)"
+        )
+
+    apps_raw = parsed.get("apps", {})
+    if not isinstance(apps_raw, dict) or not apps_raw:
+        raise CatalogError(
+            f"shipped catalog at {path} has empty or missing "
+            f"`apps:` mapping"
+        )
+
+    apps: dict[str, ShippedApp] = {}
+    for name, cfg in apps_raw.items():
+        if not isinstance(cfg, dict):
+            raise CatalogError(
+                f"shipped app {name!r} in {path} must be a mapping"
+            )
+        # Required keys.
+        missing = [
+            k
+            for k in (
+                "description",
+                "namespace",
+                "release",
+                "chart",
+                "chart_version",
+                "image_version",
+            )
+            if not isinstance(cfg.get(k), str)
+            or not str(cfg.get(k, "")).strip()
+        ]
+        if missing:
+            raise CatalogError(
+                f"shipped app {name!r} in {path} is missing "
+                f"required keys: {missing}"
+            )
+        # Optional `default_values:` mapping (added in WP10,
+        # but the loader accepts it from WP1 so the YAML
+        # can carry it without breaking).
+        default_values_raw = cfg.get("default_values", {}) or {}
+        if not isinstance(default_values_raw, dict):
+            raise CatalogError(
+                f"shipped app {name!r}.default_values in {path} "
+                f"must be a mapping"
+            )
+        apps[str(name)] = ShippedApp(
+            name=str(name),
+            description=str(cfg["description"]),
+            namespace=str(cfg["namespace"]),
+            release=str(cfg["release"]),
+            chart=str(cfg["chart"]),
+            chart_version=str(cfg["chart_version"]),
+            image_version=str(cfg["image_version"]),
+            default_values=dict(default_values_raw),
+        )
+
+    return ShippedCatalog(
+        version=version,
+        apps=apps,
+        source_path=path,
+    )
+
+
+def _deep_merge(
+    base: dict[str, object],
+    overlay: dict[str, object],
+) -> dict[str, object]:
+    """Recursively merge `overlay` into `base`.
+
+    Used by the WP1 merge rule (§5.2): the shipped
+    `default_values` is the base; per-cluster `values:`
+    is the overlay. Keys in `overlay` win on a per-key
+    basis; nested dicts merge recursively so a single
+    override at `path: foo` doesn't clobber the rest of
+    the shipped dict at `path`.
+
+    Pure-function style: returns a new dict, never
+    mutates the inputs. The types stay loose
+    (`dict[str, object]`) because values can be
+    strings, ints, bools, or nested dicts.
+    """
+    out: dict[str, object] = dict(base)
+    for key, value in overlay.items():
+        if (
+            key in out
+            and isinstance(out[key], dict)
+            and isinstance(value, dict)
+        ):
+            out[key] = _deep_merge(
+                cast(dict[str, object], out[key]),
+                cast(dict[str, object], value),
+            )
+        else:
+            out[key] = value
+    return out
 
 
 def _parse_scalar(value: str) -> object:
@@ -260,11 +532,27 @@ def load_catalog(path: Path, cluster_name: str) -> Catalog:
             raise CatalogError(
                 f"apps.{name}.enabled in {path} must be a boolean"
             )
+        # `values:` is the per-cluster overlay used by
+        # the WP1 merge against the shipped catalog's
+        # `default_values:`. It must be a mapping; if
+        # absent, the merged values come from the shipped
+        # defaults alone.
+        values_raw = cfg.get("values", {}) or {}
+        if not isinstance(values_raw, dict):
+            raise CatalogError(
+                f"apps.{name}.values in {path} must be a "
+                f"mapping; got {type(values_raw).__name__}"
+            )
+        values: dict[str, object] = {
+            str(k): v for k, v in values_raw.items()
+        }
         extra: dict[str, str] = {
-            str(k): str(v) for k, v in cfg.items() if k != "enabled"
+            str(k): str(v)
+            for k, v in cfg.items()
+            if k not in ("enabled", "values")
         }
         apps[str(name)] = AppConfig(
-            enabled=enabled_raw, extra=extra
+            enabled=enabled_raw, extra=extra, values=values
         )
 
     enabled_names = [n for n, c in apps.items() if c.enabled]
@@ -314,6 +602,9 @@ __all__ = [
     "AppConfig",
     "Catalog",
     "CatalogError",
+    "ShippedApp",
+    "ShippedCatalog",
     "load_catalog",
+    "load_shipped_catalog",
     "validate_enabled_apps_exist",
 ]
