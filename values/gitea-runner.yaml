@@ -2,12 +2,14 @@
 # gitea-runner chart (infra/charts/gitea-runner/).
 
 # 1. Two replicas is enough for a single-CP cluster; bump
-#    per cluster.
+#    per cluster. Each replica runs its own bundled
+#    dockerd (root), so they do not share the image
+#    cache — size persistence.docker below for the worst
+#    case.
 replicaCount: 2
 
 # 2. The in-cluster Gitea Service URL the runner polls.
-#    Same-namespace services use the short name, but the
-#    runner is in `gitea-runner` and gitea is in `gitea`,
+#    The runner is in `gitea-runner` and gitea is in `gitea`,
 #    so we need the FQDN.
 gitea:
   instanceUrl: "http://gitea-http.gitea.svc.cluster.local:3000"
@@ -15,24 +17,37 @@ gitea:
 
 # 3. Labels the runner advertises. Workflows in repos will
 #    say `runs-on: ubuntu-22.04` (or `self-hosted`).
+#    docker:// labels work because the dind image bundles
+#    a Docker daemon at /var/run/docker.sock.
 labels: "ubuntu-22.04:docker://ubuntu:22.04,self-hosted:host"
 
-# 4. Ephemeral — credentials single-use.
-ephemeral: true
+# 4. Ephemeral=false so the runner re-attaches via the
+#    persisted /data/.runner file across pod restarts,
+#    instead of inserting a new action_runner row every
+#    start. The StatefulSet + PVCs make the re-attach
+#    durable.
+ephemeral: false
 
-# 5. Cache server — required for actions/cache to work.
-cache:
+# 5. Metrics endpoint (port 8088, /healthz + /metrics).
+#    Enabled so kubelet can probe /healthz.
+metrics:
   enabled: true
-  host: "0.0.0.0"
   port: 8088
 
-# 6. Use the host's containerd socket for jobs. k3s
-#    bundles its own containerd at
-#    /run/k3s/containerd/containerd.sock (the standard
-#    /run/containerd/containerd.sock doesn't exist on a
-#    k3s node). The runner binary uses this socket to
-#    spawn job containers in the cluster's container
-#    runtime, mirroring the docker-socket pattern but
-#    for k3s.
-runnerBackend: "containerd"
-hostContainerdSocketPath: "/run/k3s/containerd/containerd.sock"
+# 6. Persistence. The dind root flavour writes both
+#    /data and /var/lib/docker as UID 0, so no fsGroup
+#    is needed. Storage class is left empty to use the
+#    cluster default (k3s local-path on this cluster).
+persistence:
+  runner:
+    enabled: true
+    size: 1Gi
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+  docker:
+    enabled: true
+    size: 20Gi
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce

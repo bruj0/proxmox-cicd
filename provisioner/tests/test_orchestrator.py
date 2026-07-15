@@ -208,6 +208,13 @@ def test_orchestrator_apply_returns_zero_on_full_mocks(tmp_path: Path) -> None:
         "cluster_name: cicd\n"
         "ingress:\n"
         "  base_domain: example.net\n"
+        # Test-time opt-out: skip the Vaultwarden admin-pw
+        # seed so the apply path doesn't need a live
+        # Vaultwarden + BW_CLIENTID/SECRET Secret in the
+        # cluster. The cluster Secret is still written;
+        # only the VW push is suppressed.
+        "vaultwarden:\n"
+        "  skip_admin_seed: true\n"
         "apps:\n"
         "  vaultwarden-k8s-sync:\n"
         "    enabled: true\n"
@@ -225,6 +232,16 @@ def test_orchestrator_apply_returns_zero_on_full_mocks(tmp_path: Path) -> None:
     )
     container.kubectl.delete_namespace = MagicMock(
         return_value=MagicMock(returncode=0, stdout="", stderr="")
+    )
+    # kubectl.get is read by the gitea admin-pw lifecycle
+    # (drift-check on the cluster Secret + VKS BW_CLIENTID/
+    # SECRET read in the would-be Vaultwarden seed). With
+    # vaultwarden.skip_admin_seed=true the VKS-cred read
+    # is short-circuited, so a bare rc=1 "not found"
+    # mock is enough to drive the admin-secret drift
+    # check into "create" mode.
+    container.kubectl.get = MagicMock(
+        return_value=MagicMock(returncode=1, stdout="", stderr="not found")
     )
     container.helm.install_or_upgrade = MagicMock(
         return_value=MagicMock(returncode=0, stdout="", stderr="")
@@ -265,6 +282,9 @@ def test_orchestrator_apply_with_app_filter_only_runs_named_apps(
         "cluster_name: cicd\n"
         "ingress:\n"
         "  base_domain: example.net\n"
+        "vaultwarden:\n"
+        "  skip_admin_seed: true\n"
+        "  skip_runner_seed: true\n"
         "apps:\n"
         "  vaultwarden-k8s-sync:\n"
         "    enabled: true\n"
@@ -279,9 +299,9 @@ def test_orchestrator_apply_with_app_filter_only_runs_named_apps(
     chart_dir = tmp_path / "infra" / "charts" / "gitea-runner"
     chart_dir.mkdir(parents=True)
     (chart_dir / "Chart.yaml").write_text(
-        "apiVersion: v2\nname: gitea-runner\nversion: 0.1.0\n"
+        "apiVersion: v2\nname: gitea-runner\nversion: 0.2.0\n"
     )
-    container.kubectl.wait_deployments_available = MagicMock(
+    container.kubectl.wait = MagicMock(
         return_value=MagicMock(returncode=0, stdout="", stderr="")
     )
     container.kubectl.apply = MagicMock(
@@ -289,6 +309,9 @@ def test_orchestrator_apply_with_app_filter_only_runs_named_apps(
     )
     container.kubectl.delete_namespace = MagicMock(
         return_value=MagicMock(returncode=0, stdout="", stderr="")
+    )
+    container.kubectl.get = MagicMock(
+        return_value=MagicMock(returncode=1, stdout="", stderr="not found")
     )
     container.helm.install_or_upgrade = MagicMock(
         return_value=MagicMock(returncode=0, stdout="", stderr="")

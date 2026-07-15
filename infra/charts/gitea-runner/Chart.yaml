@@ -2,21 +2,46 @@ apiVersion: v2
 name: gitea-runner
 description: |
   Gitea Actions runner wrapped in a small Helm chart. The
-  official gitea/runner docker image is run as a long-lived
-  Deployment; the runner registers itself against a Gitea
-  instance using a registration token sourced from a Secret.
+  official gitea/runner:1.0.8-dind docker image is run as a
+  long-lived StatefulSet with one replica per cluster node;
+  the runner registers itself against a Gitea instance using
+  a registration token sourced from a Secret that
+  VaultwardenK8sSync reconciles from a Vaultwarden cipher.
+
+  The chart owns two PVCs per replica:
+    * /data — holds the `.runner` registration file so the
+      runner re-attaches to the same `action_runner` row in
+      Gitea on every pod start.
+    * /var/lib/docker — holds the bundled dockerd's image
+      cache so job images survive pod recreations.
 
   Sources:
     - https://docs.gitea.com/runner/1.0.8/
     - https://gitea.com/gitea/act-runner
+    - https://github.com/gitea/runner/tree/main/examples/kubernetes
 
   Why we own this chart instead of using the upstream one:
     the gitea org doesn't publish an official helm chart for
     the runner. We just wrap the docker image in a chart so
     the install is reproducible + idempotent + CSI-attachable.
+    The StatefulSet shape is also non-trivial: it has to
+    coordinate two PVCs per replica via volumeClaimTemplates
+    and project a token Secret at a literal file path so
+    that the entrypoint script's $GITEA_RUNNER_REGISTRATION_TOKEN_FILE
+    variable resolves to the right value.
+
+  Why dind (root) and not dind-rootless:
+    The upstream image ships three flavours: basic, dind,
+    and dind-rootless. dind-rootless fails on stock k3s with
+    `failed to start the child: fork/exec /proc/self/exe:
+    operation not permitted` because rootlesskit needs
+    CAP_SYS_ADMIN inside the container's user namespace,
+    which k3s strips even with --privileged + seccomp
+    Unconfined. dind (root) is the flavour the upstream
+    `statefulset-dind.yaml` example uses for the same reason.
 type: application
-version: 0.1.0
-appVersion: "1.0.8"
+version: 0.2.0
+appVersion: "1.0.8-dind"
 keywords:
   - gitea
   - actions

@@ -1,0 +1,172 @@
+{{/*
+A StatefulSet (not a Deployment) because each runner pod needs
+to keep its own `.runner` registration file across restarts and
+reschedules. With `ephemeral: false`, the registration file at
+/data/.runner is what tells gitea-runner "you already registered,
+just re-attach to the same `action_runner` row in the DB" —
+without it, the entrypoint script (scripts/run.sh) would call
+`gitea-runner register` on every start and insert a new row.
+
+Using a StatefulSet gives each replica its own PVC via
+`volumeClaimTemplates`, which is what makes the re-attach
+durable. A Deployment with emptyDir would lose the file on
+every pod recreation.
+
+Modelled on the upstream example
+`gitea/runner/examples/kubernetes/statefulset-dind.yaml`. We
+use the `1.0.8-dind` flavour (root) rather than the
+`1.0.8-dind-rootless` flavour because rootless DinD does not
+work reliably on stock k3s (rootlesskit's child process needs
+CAP_SYS_ADMIN in the container's user namespace, which k3s
+strips even with --privileged + seccomp Unconfined).
+*/}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "gitea-runner.fullname" . }}
+  labels:
+    {{- include "gitea-runner.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "gitea-runner.fullname" . }}
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "gitea-runner.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "gitea-runner.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "gitea-runner.fullname" . }}
+      {{- if .Values.metrics.enabled }}
+      hostAliases:
+        - ip: 127.0.0.1
+          hostnames:
+            - "gitea-runner-metrics"
+      {{- end }}
+      containers:
+        - name: runner
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            # REQUIRED for the dind image. docker-in-docker runs
+            # its daemon inside the container and needs to mount
+            # cgroups + create network namespaces, which only
+            # the privileged flag grants. The daemon listens on
+            # /var/run/docker.sock, which the runner binary inside
+            # the same container picks up via the baked-in
+            # DOCKER_HOST.
+            privileged: true
+          env:
+            - name: GITEA_INSTANCE_URL
+              value: {{ .Values.gitea.instanceUrl | quote }}
+            - name: GITEA_RUNNER_REGISTRATION_TOKEN_FILE
+              value: /etc/runner/token
+            - name: GITEA_RUNNER_NAME
+              value: {{ .Values.gitea.runnerName | quote }}
+            - name: GITEA_RUNNER_LABELS
+              value: {{ .Values.labels | quote }}
+            - name: GITEA_RUNNER_EPHEMERAL
+              value: {{ .Values.ephemeral | quote }}
+            # Point gitea-runner at the config.yaml we mount
+            # below (gitea-runner -c CONFIG_FILE ...). The
+            # entrypoint scripts/run.sh passes CONFIG_FILE
+            # through to `gitea-runner register` and
+            # `gitea-runner daemon` if set.
+            - name: CONFIG_FILE
+              value: /etc/runner-config/config.yaml
+          volumeMounts:
+            - name: token
+              mountPath: /etc/runner
+              readOnly: true
+            - name: runner-config
+              mountPath: /etc/runner-config
+              readOnly: true
+            {{- if .Values.persistence.runner.enabled }}
+            - name: runner-data
+              mountPath: /data
+            {{- end }}
+            {{- if .Values.persistence.docker.enabled }}
+            # The bundled Docker daemon's data root. Holds the
+            # images pulled for jobs. Without a PVC on this
+            # mount the image cache is lost on every pod
+            # recreation and every job re-pulls its image.
+            - name: docker-data
+              mountPath: /var/lib/docker
+            {{- end }}
+          ports:
+            # The metrics endpoint (when enabled by the
+            # config.yaml mounted below) serves `/healthz`
+            # on this port. It is also where Prometheus
+            # would scrape `/metrics` if we wired that up.
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+          {{- if .Values.livenessProbe.enabled }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+          {{- end }}
+          {{- if .Values.readinessProbe.enabled }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: token
+          secret:
+            secretName: {{ include "gitea-runner.fullname" . }}-config
+            # The Secret stores the token under the
+            # ``registrationToken`` key. Project it as
+            # the literal path /etc/runner/token so the
+            # gitearunner binary (which reads
+            # $GITEA_RUNNER_REGISTRATION_TOKEN_FILE)
+            # can stat it as a regular file.
+            items:
+              - key: registrationToken
+                path: token
+        - name: runner-config
+          configMap:
+            name: {{ include "gitea-runner.fullname" . }}-config
+  {{- if or .Values.persistence.runner.enabled .Values.persistence.docker.enabled }}
+  volumeClaimTemplates:
+    {{- if .Values.persistence.runner.enabled }}
+    # The runner's working directory: the .runner registration
+    # file (re-attachment state) and any user-supplied config.yaml.
+    - metadata:
+        name: runner-data
+      spec:
+        accessModes:
+          {{- toYaml .Values.persistence.runner.accessModes | nindent 10 }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.runner.size | quote }}
+        {{- if .Values.persistence.runner.storageClass }}
+        storageClassName: {{ .Values.persistence.runner.storageClass | quote }}
+        {{- end }}
+    {{- end }}
+    {{- if .Values.persistence.docker.enabled }}
+    # The bundled Docker daemon's data root. Holds the images
+    # pulled for jobs. Size it for the images you expect to
+    # cache.
+    - metadata:
+        name: docker-data
+      spec:
+        accessModes:
+          {{- toYaml .Values.persistence.docker.accessModes | nindent 10 }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.docker.size | quote }}
+        {{- if .Values.persistence.docker.storageClass }}
+        storageClassName: {{ .Values.persistence.docker.storageClass | quote }}
+        {{- end }}
+    {{- end }}
+  {{- end }}

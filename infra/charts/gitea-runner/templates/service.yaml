@@ -1,16 +1,26 @@
-{{- if .Values.cache.enabled }}
+{{- if .Values.metrics.enabled }}
+# Exposes the runner's `/healthz` + `/metrics` HTTP endpoint
+# on a ClusterIP service. The kubelet's liveness/readiness
+# probes do NOT go through this Service — they target the
+# pod IP directly (see StatefulSet spec). This Service
+# exists for:
+#
+#   * Prometheus scraping (no ServiceMonitor is included;
+#     wire one up if you install kube-prometheus).
+#   * Operator debugging (curl the metrics endpoint from
+#     inside the cluster).
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "gitea-runner.fullname" . }}-cache
+  name: {{ include "gitea-runner.fullname" . }}-metrics
   labels:
     {{- include "gitea-runner.labels" . | nindent 4 }}
 spec:
   type: ClusterIP
   ports:
-    - name: cache
-      port: {{ .Values.cache.port }}
-      targetPort: cache
+    - name: metrics
+      port: {{ .Values.metrics.port }}
+      targetPort: metrics
       protocol: TCP
   selector:
     {{- include "gitea-runner.selectorLabels" . | nindent 4 }}

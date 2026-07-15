@@ -1,72 +1,175 @@
 # Default values for gitea-runner. Override per cluster in
 # proxmox-cicd/values/gitea-runner.yaml.
 
-# 1. Image — gitea/runner:1.0.8 (pinned in versions.yaml).
+# 1. Image — gitea/runner:1.0.8-* tag (pinned in versions.yaml).
+#
+#    Three flavours are published from upstream, all wrapping the
+#    same `gitea-runner` binary:
+#
+#      * `1.0.8`               — basic Alpine image, no Docker
+#                                daemon inside; needs an external
+#                                Docker socket mounted in
+#                                (--privileged required when
+#                                /var/run/docker.sock is host).
+#
+#      * `1.0.8-dind`          — privileged docker-in-docker,
+#                                daemon runs as root inside the
+#                                container. Needs --privileged.
+#                                WORKS RELIABLY on Kubernetes
+#                                (this is what
+#                                gitea-runner/examples/kubernetes/
+#                                statefulset-dind.yaml uses).
+#
+#      * `1.0.8-dind-rootless` — docker-in-docker that runs as
+#                                an unprivileged user (UID 1000)
+#                                inside the container. Needs
+#                                --privileged + seccomp=unconfined
+#                                AND the host kernel must allow
+#                                the user namespace fork/exec
+#                                pattern that rootlesskit uses.
+#                                On k3s 1.36 this fails with
+#                                `failed to start the child:
+#                                fork/exec /proc/self/exe:
+#                                operation not permitted` even
+#                                with the right seccomp profile,
+#                                because k3s drops CAP_SYS_ADMIN
+#                                from the rootlesskit child
+#                                namespace before the entrypoint
+#                                gets a chance to use it.
+#
+#    We default to `-dind` (root flavour) because:
+#      1. it works without a host Docker daemon (the cluster is
+#         k3s+containerd, no dockerd on the node);
+#      2. it persists the `.runner` registration file and the
+#         image cache across pod restarts, so the runner
+#         re-attaches to Gitea instead of registering a new row
+#         every restart;
+#      3. it's the only DinD flavour that works reliably on
+#         k3s (rootless DinD in k8s is fighting upstream's
+#         design and only works on specially-configured kubelets
+#         or hosts with relaxed capability masking).
+#
+#    Switch to `1.0.8-dind-rootless` only if your kubelet
+#    explicitly opts in to the UserNamespaces feature gate AND
+#    you accept the extra security knobs (seccomp Unconfined +
+#    procMount Unmasked + hostUsers false).
 image:
   repository: gitea/runner
-  tag: "1.0.8"
+  tag: "1.0.8-dind"
   pullPolicy: IfNotPresent
 
 # 2. Replica count — 2 runners is enough for a single-CP/worker
-#    cluster. Bump per cluster.
+#    cluster. Bump per cluster. With the dind image, each
+#    replica runs its own bundled daemon (private per-pod) so
+#    replicas do not share the image cache; size
+#    `persistence.docker.size` for the worst case.
 replicaCount: 2
 
-# 3. Resource requests/limits.
+# 3. Resource requests/limits. dind runs two processes
+#    (dockerd + runner), so request a bit more than the basic
+#    image.
 resources:
   requests:
-    cpu: "100m"
-    memory: "256Mi"
+    cpu: "200m"
+    memory: "512Mi"
   limits:
-    cpu: "1000m"
-    memory: "1Gi"
+    cpu: "2000m"
+    memory: "2Gi"
 
 # 4. The Gitea instance URL the runner polls. Sourced from
-#    catalog.ingress.base_domain; rendered into the Deployment
+#    catalog.ingress.base_domain; rendered into the StatefulSet
 #    env at apply time.
 gitea:
   instanceUrl: "http://gitea.gitea.svc.cluster.local:3000"
   runnerName: "cicd-runner"
 
 # 5. Labels the runner advertises to Gitea. Used by workflows
-#    in `runs-on:` to dispatch jobs.
+#    in `runs-on:` to dispatch jobs. The dind image ships with
+#    a Docker daemon at /var/run/docker.sock so docker:// labels
+#    work out of the box.
 labels: "ubuntu-22.04:docker://ubuntu:22.04,self-hosted:host"
 
-# 6. Ephemeral runner — credentials are single-use and
-#    discarded after each job. Safer for an exposed runner.
-ephemeral: true
+# 6. Ephemeral runner — when true the runner registers a
+#    brand-new `action_runner` row on every start and removes
+#    itself after one job. With non-ephemeral mode (false) the
+#    registration file at /data/.runner is reused on every
+#    start, so the runner re-attaches to the same Gitea row
+#    instead of inserting new ones. We default to non-ephemeral
+#    because the dind image persists /data to a PVC, so the
+#    re-attach is reliable across pod restarts.
+ephemeral: false
 
-# 7. Cache server port (advanced config). The runner serves a
-#    local cache to action runners in the same network.
-cache:
+# 7. Metrics endpoint. gitea-runner ships a Prometheus
+#    metrics endpoint plus a `/healthz` liveness check at
+#    http://<addr>/metrics (and /healthz), controlled by
+#    the `metrics` key in the runner's config.yaml. We turn
+#    it on here so kubelet's liveness/readiness probes can
+#    hit `/healthz`. The pod exposes the port directly (no
+#    Service is required for cluster-internal traffic from
+#    the kubelet).
+#
+#    Note: this is NOT the actions/cache server. The cache
+#    server is a separate `gitea-runner cache-server` process
+#    that we don't run inside the runner pod (it's only
+#    needed when sharing a cache across runners, which we
+#    don't do at this scale).
+metrics:
   enabled: true
-  host: "0.0.0.0"
   port: 8088
 
-# 8. ServiceAccount + RBAC. The runner needs to be able to
-#    create ephemeral Pods (when running kubernetes-native
-#    jobs) and read Secret + ConfigMap (for env injection).
+# Optional shared cache server URL. When set, every runner
+# will use this `gitea-runner cache-server` instead of its
+# own built-in cache. Leave empty (default) to disable
+# sharing — each runner pulls images independently.
+cache:
+  externalServer: ""
+  externalSecret: ""
+
+# 8. ServiceAccount + RBAC. The runner only needs the
+#    Kubernetes API for kubernetes-native jobs; if you never
+#    use those you can disable creation.
 serviceAccount:
   create: true
   name: ""
 
-# 9. Container backend. The runner spawns job containers in
-#    the cluster's container runtime:
-#      - "docker"     mount the host docker socket
-#      - "containerd" mount the host containerd socket (k3s)
-#    Set to anything else (e.g. "none") to disable host socket
-#    mounting entirely; jobs then run in the runner container.
-runnerBackend: "docker"
-hostDockerSocketPath: "/var/run/docker.sock"
-hostContainerdSocketPath: "/run/containerd/containerd.sock"
+# 9. Persistence. The dind image needs two writable volumes
+#    per replica:
+#
+#      * /data — the runner's working dir. Contains the
+#        `.runner` registration file (re-attachment state)
+#        and any user-supplied config.yaml. ~1 Gi is plenty.
+#
+#      * /var/lib/docker — the bundled Docker daemon's data
+#        root. Holds pulled job images. Without it, the
+#        image cache is lost on every pod recreation and every
+#        job re-pulls its image. Size it for the images you
+#        expect to cache (20 Gi is a reasonable starting
+#        point).
+#
+#    Both are written by UID 0 (the dind root flavour), so no
+#    fsGroup is needed.
+persistence:
+  runner:
+    enabled: true
+    size: 1Gi
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+  docker:
+    enabled: true
+    size: 20Gi
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
 
-# 10. Probe — use the runner's /-/ready endpoint (gitea
-#     runner 1.x exposes this for k8s).
+# 10. Probes — use the runner's /-/ready endpoint on the
+#     cache port (gitea-runner 1.x exposes it for k8s).
 livenessProbe:
   enabled: true
-  initialDelaySeconds: 30
+  initialDelaySeconds: 60
   periodSeconds: 30
 
 readinessProbe:
   enabled: true
-  initialDelaySeconds: 10
+  initialDelaySeconds: 30
   periodSeconds: 10

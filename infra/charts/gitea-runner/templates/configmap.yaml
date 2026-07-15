@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "gitea-runner.fullname" . }}-config
+  labels:
+    {{- include "gitea-runner.labels" . | nindent 4 }}
+data:
+  config.yaml: |-
+    # gitea-runner config — passed to the daemon via
+    # CONFIG_FILE=/etc/runner/config.yaml (the entrypoint
+    # scripts/run.sh forwards CONFIG_FILE as `-c CONFIG_FILE`).
+    #
+    # Only the keys we want to override from defaults live
+    # here. The runner reads the registration file from
+    # GITEA_RUNNER_REGISTRATION_TOKEN_FILE (=/etc/runner/token,
+    # projected from a Secret) and picks the Gitea URL /
+    # name / labels / ephemeral flag from the corresponding
+    # GITEA_* env vars, so those don't need to appear here.
+
+    metrics:
+      enabled: true
+      addr: "0.0.0.0:{{ .Values.metrics.port }}"
+
+    {{- if .Values.cache.externalServer }}
+    cache:
+      external_server: {{ .Values.cache.externalServer | quote }}
+      external_secret: {{ required "cache.externalSecret required when cache.externalServer is set" .Values.cache.externalSecret | quote }}
+    {{- end }}
+
+    log:
+      # The runner's own log level. `info` matches the
+      # upstream default and keeps the pod logs readable.
+      level: info
