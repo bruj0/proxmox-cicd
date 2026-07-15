@@ -50,7 +50,7 @@ make status CLUSTER=cicd              # live state
 | App | Chart | Namespace | Persistence | Ingress |
 |---|---|---|---|---|
 | `gitea` | `oci://docker.gitea.com/charts/gitea:12.0.0` | `gitea` | `proxmox-lvm-thin` (5 Gi) | `gitea.example.net` |
-| `gitea-runner` | local `infra/charts/gitea-runner:0.1.0` | `gitea-runner` | `EmptyDir` (ephemeral) | none |
+| `gitea-runner` | local `infra/charts/gitea-runner:0.2.0` | `gitea-runner` | `proxmox-lvm-thin`: 1×1Gi (`/data`, `.runner` file) + 1×20Gi (`/var/lib/docker`, image cache) per replica | none |
 | `bitwarden-sm-operator` | `bitwarden/sm-operator:0.4.0` (`--devel`) | `sm-operator-system` | none | none |
 
 The catalog is operator-extensible: see

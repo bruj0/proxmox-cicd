@@ -102,7 +102,7 @@ make status CLUSTER=cicd
 # app                     namespace              installed chart        image
 # bitwarden-sm-operator   sm-operator-system     yes      0.4.0        0.4.0
 # gitea                   gitea                  yes      12.0.0       1.26.x
-# gitea-runner            gitea-runner           yes      0.1.0        1.0.8
+# gitea-runner            gitea-runner           yes      0.2.0        1.0.8-dind
 ```
 
 And on the cluster:

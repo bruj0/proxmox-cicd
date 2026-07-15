@@ -79,7 +79,7 @@ restart any infrastructure pods. It only:
 | App | Chart | What it does | Persistence | Ingress |
 |---|---|---|---|---|
 | `gitea` | `oci://docker.gitea.com/charts/gitea` | Self-hosted Git + Actions + Packages | lvm-thin PVC for `/data` (repos, avatars, LFS) | `HTTPRoute` -> `gitea.example.net` (HTTP 3000) |
-| `gitea-runner` | `oci://ghcr.io/actions-runner-controller/actions-runner-controller` is wrong — we use the [gitea/act-runner](https://gitea.com/gitea/act-runner) **docker** image, packaged as a small per-app chart under `infra/charts/gitea-runner/` | Runs Gitea Actions jobs in Docker-in-Docker containers | `EmptyDir` for `/data` (ephemeral runner) | none |
+| `gitea-runner` | We use the [gitea/act-runner](https://gitea.com/gitea/act-runner) **`1.0.8-dind` docker** image (root Docker-in-Docker flavour), packaged as a per-app chart under `infra/charts/gitea-runner/` | Runs Gitea Actions jobs in Docker-in-Docker containers inside each pod's bundled `dockerd` (no host Docker socket). Long-lived StatefulSet (not Deployment) so each replica keeps its `.runner` registration file across restarts. | lvm-thin PVCs: `/data` (1 Gi, holds `.runner`) + `/var/lib/docker` (20 Gi, image cache) — one of each per replica via `volumeClaimTemplates` | none |
 | `bitwarden-sm-operator` | `https://charts.bitwarden.com/bitwarden/sm-operator` (devel) | Syncs Bitwarden Secrets Manager secrets into Kubernetes Secrets | none (the controller is stateless) | none |
 
 Each app is **isolated in its own namespace**, has its own
@@ -98,9 +98,13 @@ The catalog v0.1.0 is the minimum that's useful end-to-end:
   push code. Without gitea, the rest is just plumbing.
 - **gitea-runner** is what makes `git push` actually do
   something: it polls gitea for queued Actions jobs and runs
-  them in Docker containers. It needs an **ephemeral**
-  registration token so a compromised job can't pick up the
-  next one.
+  them in Docker containers inside a per-pod bundled
+  `dockerd`. The chart uses `ephemeral: false` so the
+  runner re-attaches to its existing Gitea row on every
+  pod start (via a `.runner` file persisted to a PVC);
+  Gitea OSS forces run-once mode regardless but the
+  re-attach path still keeps the `action_runner` table
+  from growing without bound.
 - **bitwarden-sm-operator** is the secrets-management layer
   the two above consume. It runs as a controller that
   watches `BitwardenSecret` CRDs and mirrors secrets from
@@ -207,7 +211,7 @@ everything from scratch.
 |---|---|---|
 | gitea (chart) | `12.0.0` | https://gitea.com/gitea/helm-chart/releases/tag/v12.0.0 |
 | gitea (image) | `1.26.x` (rolling: `1.26`) | https://docs.gitea.com/ |
-| gitea-runner (image) | `1.0.8` | https://docs.gitea.com/runner/1.0.8/ |
+| gitea-runner (image) | `1.0.8-dind` (Docker-in-Docker, root flavour; the rootless flavour is not viable on stock k3s — see `infra/charts/gitea-runner/Chart.yaml`) | https://docs.gitea.com/runner/1.0.8/ |
 | bitwarden-sm-operator (chart) | `0.4.0` (devel) | https://bitwarden.com/help/secrets-manager-kubernetes-operator/ |
 | postgresql (chart, sub of gitea) | `16.x` | disabled — gitea's chart's built-in pg is enabled |
 | valkey (chart, sub of gitea) | `8.x` | disabled — gitea's chart's built-in valkey-cluster is enabled |
@@ -236,15 +240,53 @@ The Gitea Runner docs (https://docs.gitea.com/runner/1.0.8/)
 describe `docker run` with several env vars. To install
 that reproducibly, idempotently, and with CSI persistence,
 we wrap the image in a small Helm chart we own. The chart
-has zero templating logic beyond:
+shapes a single workload:
 
-- A Deployment (`gitea/runner:1.0.8`, env from a Secret
-  named `gitea-runner-config`).
-- A Secret named `gitea-runner-config` (rendered from
-  `values.yaml`, sourced from Bitwarden).
-- A ServiceAccount + RBAC for the runner to create
-  ephemeral Pods (we use a Deployment, not a Job, so the
-  runner stays up and registers itself).
+- A **StatefulSet** (`gitea/runner:1.0.8-dind`, env from
+  a Secret). We use a StatefulSet instead of a Deployment
+  so each replica keeps a stable identity and its own
+  `volumeClaimTemplates`-owned PVCs across restarts:
+  - `/data` (1 Gi) — holds the `.runner` registration
+    file. The runner re-attaches to the existing
+    `action_runner` row in Gitea on every pod start
+    instead of inserting a new one (which is what
+    `ephemeral: true` does). The chart pins
+    `ephemeral: false` and lets the `.runner` file do
+    the re-attach; Gitea OSS still forces run-once
+    regardless but the row count stays bounded.
+  - `/var/lib/docker` (20 Gi) — the bundled `dockerd`'s
+    image cache. Without this, every pod recreation
+    re-pulls every job's image.
+- A **Secret** named `gitea-runner-gitea-runner-config`
+  (the chart's fullname prefix is intentional; the
+  fullname is `<Release.Name>-<Chart.Name>` because the
+  chart and release are both `gitea-runner`).
+  VaultwardenK8sSync reconciles the `registrationToken`
+  data key from a Vaultwarden Secure Note whose custom
+  fields match the VKS triple
+  `(namespaces=gitea-runner,
+  secret-name=gitea-runner-gitea-runner-config,
+  secret-key=registrationToken)`.
+- A **ServiceAccount + RBAC** for the runner to talk to
+  the cluster API (k8s-native Actions jobs).
+- A **ConfigMap** providing `config.yaml` that turns on
+  the runner's built-in `/healthz` + `/metrics` HTTP
+  endpoint on port 8088 (used by the liveness/readiness
+  probes).
+
+The chart ships the **Docker-in-Docker (root)** flavour
+(`gitea/runner:1.0.8-dind`) rather than the **rootless**
+flavour (`gitea/runner:1.0.8-dind-rootless`). The
+rootless flavour fails on stock k3s with
+`failed to start the child: fork/exec /proc/self/exe:
+operation not permitted` because rootlesskit needs
+`CAP_SYS_ADMIN` inside the container's user namespace,
+which k3s strips even with `--privileged` and seccomp
+Unconfined. The root flavour requires `--privileged`
+on the pod but works out of the box, which is what the
+upstream
+`gitea-runner/examples/kubernetes/statefulset-dind.yaml`
+example uses for the same reason.
 
 This is the **only** "we own a chart" piece in the repo;
 everything else consumes upstream charts.
@@ -266,9 +308,16 @@ create `hostPath` volumes, never use the default emptyDir
 for stateful data, and never set `volumeMode: Filesystem`
 manually — the chart's defaults do that.
 
-The exception is the **gitea-runner** itself, which uses
-`EmptyDir` for `/data` (its `.runner` registration file
-is volatile on purpose — the runner is ephemeral).
+The exception is the **gitea-runner** itself, which
+**does** use PVCs (the chart defaults to `proxmox-lvm-thin`
+with 1 Gi for `/data` and 20 Gi for `/var/lib/docker`).
+`/data` holds the `.runner` registration file so the
+runner re-attaches to its existing Gitea row on every pod
+start (instead of inserting a new `action_runner` row
+each time, which is what `ephemeral: true` does); without
+it the Gitea `action_runner` table grows on every pod
+restart. `/var/lib/docker` holds the bundled `dockerd`'s
+image cache so job images survive pod recreations.
 
 ## 4. The shape of the repo
 
@@ -295,8 +344,10 @@ proxmox-cicd/
 │   │       ├── Chart.yaml
 │   │       ├── values.yaml
 │   │       └── templates/
-│   │           ├── deployment.yaml
-│   │           ├── secret.yaml
+│   │           ├── statefulset.yaml   -- the runner pod (StatefulSet, not Deployment)
+│   │           ├── configmap.yaml     -- config.yaml enabling metrics:/healthz on 8088
+│   │           ├── secret.yaml        -- placeholder registrationToken, VKS-owned
+│   │           ├── service.yaml       -- ClusterIP for /healthz + /metrics
 │   │           ├── serviceaccount.yaml
 │   │           └── _helpers.tpl
 │   └── clusters/
@@ -442,19 +493,31 @@ Acceptance:
 
 Files: `infra/charts/gitea-runner/Chart.yaml`,
 `infra/charts/gitea-runner/values.yaml`,
-`infra/charts/gitea-runner/templates/deployment.yaml`,
+`infra/charts/gitea-runner/templates/statefulset.yaml`,
+`infra/charts/gitea-runner/templates/configmap.yaml`,
 `infra/charts/gitea-runner/templates/secret.yaml`,
+`infra/charts/gitea-runner/templates/service.yaml`,
 `infra/charts/gitea-runner/templates/serviceaccount.yaml`,
 `provisioner/lib/apps/gitea_runner.py`,
 `provisioner/tests/test_gitea_runner.py`.
 
 Acceptance:
 - `helm template test infra/charts/gitea-runner` renders
-  the expected Deployment + Secret + SA + RBAC.
-- `GiteaRunnerApp().apply()` first applies the BitwardenSecret
-  CR (the controller will populate `gitea-runner-config`
-  with the registration token); then `helm install`s the
-  chart; then waits for the runner pod to be Ready.
+  the expected StatefulSet + ConfigMap + Secret + SA + RBAC
+  + ClusterIP Service.
+- `GiteaRunnerApp().apply()` first mints a fresh
+  registration token via the Gitea admin API and pushes it
+  to Vaultwarden as a Secure Note carrying the VKS triple
+  `(namespaces=gitea-runner,
+  secret-name=gitea-runner-gitea-runner-config,
+  secret-key=registrationToken)`; then `helm install`s the
+  chart; then waits for the runner StatefulSet to be
+  Available via `kubectl wait statefulset/<release>
+  --for=condition=Available=true`. VaultwardenK8sSync
+  reconciles the cluster Secret from the Vaultwarden
+  cipher within one sync tick; the runner pod's
+  `/etc/runner/token` volume mount picks up the populated
+  value.
 
 ### WP5 — bitwarden-sm-operator app
 

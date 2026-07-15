@@ -10,7 +10,8 @@ into the cluster by VaultwardenK8sSync):
    re-stored in Vaultwarden.
 2. **The Gitea runner registration token** — created in
    Gitea's web UI, then re-stored in Vaultwarden so the
-   `gitea-runner` Deployment's mounted Secret refreshes.
+   `gitea-runner` StatefulSet pod's mounted Secret
+   refreshes.
 
 Both flows use the same primitives:
 
@@ -59,7 +60,7 @@ sequenceDiagram
 The same flow applies to the runner registration token;
 only the Secret coordinates change
 (`namespaces=gitea-runner`,
-`secret-name=gitea-runner-config`,
+`secret-name=gitea-runner-gitea-runner-config`,
 `secret-key=registrationToken`).
 
 ---
@@ -215,8 +216,11 @@ The Gitea Runner uses an ephemeral registration token
 long as the Gitea admin doesn't reset it. When the admin
 resets it:
 
-1. The previous k8s Secret `gitea-runner/gitea-runner-config`
-   carries the stale token.
+1. The previous k8s Secret
+   `gitea-runner/gitea-runner-gitea-runner-config`
+   (note: the chart uses the full helm-release name as
+   a prefix, not the bare `gitea-runner-config`) carries
+   the stale token.
 2. VKS hasn't seen an update yet because the Vaultwarden
    note still holds the old value.
 3. The runner pod keeps trying to register with the old
@@ -241,7 +245,7 @@ chmod 600 /tmp/runner-token
 uv run vaultwarden-notes --password-file /tmp/vw.pw seed \
   --app gitea-runner \
   --namespace gitea-runner \
-  --secret-name gitea-runner-config \
+  --secret-name gitea-runner-gitea-runner-config \
   --secret-key registrationToken \
   --body @/tmp/runner-token
 ```
@@ -260,7 +264,8 @@ KUBECONFIG=../proxmox-k3s/infra/clusters/cicd/kubeconfig.yaml \
   -l app.kubernetes.io/name=vaultwarden-kubernetes-secrets -f
 ```
 
-You should see `gitea-runner/gitea-runner-config updated`
+You should see
+`gitea-runner/gitea-runner-gitea-runner-config updated`
 within one sync interval.
 
 #### Step 4 — Verify the cluster Secret
@@ -268,7 +273,7 @@ within one sync interval.
 ```sh
 KUBECONFIG=../proxmox-k3s/infra/clusters/cicd/kubeconfig.yaml \
   kubectl --context cicd \
-  -n gitea-runner get secret gitea-runner-config \
+  -n gitea-runner get secret gitea-runner-gitea-runner-config \
   -o jsonpath='{.data.registrationToken}' | base64 -d ; echo
 ```
 
@@ -283,12 +288,34 @@ restart is usually not required. If the runner is stuck:
 ```sh
 KUBECONFIG=../proxmox-k3s/infra/clusters/cicd/kubeconfig.yaml \
   kubectl --context cicd \
-  -n gitea-runner rollout restart deployment gitea-runner
+  -n gitea-runner rollout restart statefulset gitea-runner-gitea-runner
 ```
 
-The runner restarts, reads the new token from the Secret,
-and re-registers against Gitea. Because the runner is
-`ephemeral: true`, each new poll uses the current token.
+> Note: the StatefulSet name includes the helm release
+> prefix (`gitea-runner-gitea-runner`), not just
+> `gitea-runner`. The fullname is
+> `<Release.Name>-<Chart.Name>` because the chart name
+> is also `gitea-runner`. Use `kubectl get statefulset
+> -n gitea-runner` if you're not sure.
+
+The runner pod restarts, reads the new token from the
+Secret (the `.runner` file in `/data` survives because
+`/data` is a PVC backed by `proxmox-lvm-thin`), and
+re-attaches to the same `action_runner` row in Gitea
+instead of registering a new one.
+
+> `ephemeral: false` in the chart means the runner is
+> intended to be long-lived. Gitea OSS forces run-once
+> mode regardless (see `poller: cannot register new
+> runner as ephemeral upgrade Gitea to gain security,
+> run-once will be used automatically` in the runner
+> logs) but the `.runner` file re-attach still works
+> when the token is unchanged. When you bump the token
+> in Vaultwarden, VKS rewrites the Secret and the pod's
+> volume mount picks up the new value on its next
+> refresh; if the pod doesn't pick it up
+> automatically, the `rollout restart statefulset`
+> above forces a fresh start.
 
 ---
 

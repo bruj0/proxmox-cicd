@@ -201,12 +201,22 @@ to run VKS without patching the upstream.
 
 ## Wiring an app to a Vaultwarden item (gitea-runner example)
 
-The `gitea-runner` chart mounts a `gitea-runner-config`
-Secret (key `registrationToken`) into the runner pod
-as a volume at `/etc/runner/token`. The
+The `gitea-runner` chart mounts a
+`gitea-runner-gitea-runner-config` Secret (key
+`registrationToken`) into each runner pod as a volume at
+`/etc/runner/token`. The
 `provisioner/lib/apps/gitea_runner.py` apply step is
-intentionally **read-only** on that Secret — VKS is
-the single writer. To populate the Secret:
+intentionally **read-only** on that Secret — VKS is the
+single writer. The Secret name has the chart's fullname
+prefix (`<Release.Name>-<Chart.Name>-config`) because both
+the release and the chart are named `gitea-runner`. On a
+clean apply, the orchestrator mints the registration
+token for you via the Gitea admin API and pushes it into
+Vaultwarden as a Secure Note carrying the VKS triple
+below — manual steps 2 and 3 are only needed if you're
+working around the orchestrator (e.g. rotation after the
+admin-pw cipher has drifted; see
+[rotate-gitea-tokens.md](rotate-gitea-tokens.md)):
 
 1. Finish Gitea first-boot (set the admin password).
 2. Site Administration → Actions → Runners → Create
@@ -220,22 +230,27 @@ the single writer. To populate the Secret:
      verbatim
    - **Custom fields** (case-insensitive):
      - `namespaces` = `gitea-runner`
-     - `secret-name` = `gitea-runner-config`
+     - `secret-name` = `gitea-runner-gitea-runner-config`
+       (matches the chart's fullname-prefixed Secret
+       name; the older `gitea-runner-config` is from a
+       pre-fullname version of the chart and VKS would
+       write to a Secret nobody is reading)
      - `secret-key` = `registrationToken`
 
 4. VKS picks up the new item within one sync interval
-   (default 5 min) and writes it into
-   `gitea-runner-config/registrationToken` in the
-   `gitea-runner` namespace. The runner pod's volume
-   mount refreshes within ~30s and the runner leaves
-   `CrashLoopBackOff`, registers against Gitea, and
-   transitions to `Ready`.
+   (default 30s in the deployed `VaultwardenK8sSync`
+   chart) and writes it into
+   `gitea-runner-gitea-runner-config/registrationToken`
+   in the `gitea-runner` namespace. The runner pod's
+   volume mount refreshes within ~30s and the runner
+   leaves `CrashLoopBackOff`, registers against Gitea,
+   and transitions to `Ready`.
 
 To verify:
 
 ```sh
 KUBECONFIG=../proxmox-k3s/infra/clusters/cicd/kubeconfig.yaml \
-  kubectl -n gitea-runner get secret gitea-runner-config \
+  kubectl -n gitea-runner get secret gitea-runner-gitea-runner-config \
   -o jsonpath='{.data.registrationToken}' | base64 -d ; echo
 
 KUBECONFIG=../proxmox-k3s/infra/clusters/cicd/kubeconfig.yaml \

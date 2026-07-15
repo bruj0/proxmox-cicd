@@ -105,7 +105,7 @@ field summary:
 
 ```
 id=bd915266-...  name=cloudflared  ns=cloudflared  name=cloudflare-tunnel-remote  key=tunnelToken
-id=f47ac10b-...  name=gitea-runner-token  ns=gitea-runner  name=gitea-runner-config  key=registrationToken
+id=f47ac10b-...  name=gitea-runner-token  ns=gitea-runner  name=gitea-runner-gitea-runner-config  key=registrationToken
 …
 ```
 
