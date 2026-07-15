@@ -1833,7 +1833,7 @@ the four apps**.
   fails the build if `apps/*.py` imports `VaultwardenClient`
   directly. After WP12 only `apps/base.py` imports it.
 
-### WP13 — Chart/image/version constants as class attributes
+### WP13 — Chart/image/version constants as class attributes ✅ (commit pending)
 
 Module-level constants become class attributes read
 from the shipped catalog.
@@ -1852,12 +1852,22 @@ from the shipped catalog.
       chart = "oci://docker.gitea.com/charts/gitea"
       chart_version = "12.0.0"
       image_version = "1.26.x"
-      default_values_file = "apps/templates/gitea/values.yaml"
+      default_values_file = "values/gitea.yaml"
   ```
-  `BaseApp.__init_subclass__` reads these from the
-  shipped catalog if `chart_version` / `image_version`
-  are not declared on the subclass; the class-attribute
-  form is the explicit override.
+  Shipped (above) — the four apps now expose the
+  full class-attribute contract and read those values
+  in `apply()`. The shipped catalog is the source
+  of truth; the apps declare them as class attrs
+  (verified by the drift test).
+
+  `BaseApp.__init_subclass__` does **not** read from
+  the shipped catalog at class-creation time — the
+  original plan called for a catalog-driven mixin,
+  but the simpler "class-attribute = explicit
+  override" form matches the codebase's existing
+  pattern (registry key, namespace default,
+  release default) and avoids tight coupling
+  between `apps/base.py` and the catalog YAML.
 - Same shape for `apps/gitea_runner.py`,
   `apps/cloudflared.py`,
   `apps/vaultwarden_k8s_sync.py`.

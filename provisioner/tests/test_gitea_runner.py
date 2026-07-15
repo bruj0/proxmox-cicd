@@ -8,14 +8,19 @@ from unittest.mock import MagicMock
 import pytest
 
 from provisioner.lib.apps.gitea_runner import (
-    APP_VERSION,
-    CHART_VERSION,
     GiteaRunnerApp,
-    NAMESPACE,
     RUNNER_CONFIG_SECRET,
 )
 from provisioner.lib.apps import app_by_name, reset_registry
 from provisioner.lib.container import Container
+
+# WP13 — chart constants used to be module-level
+# (`APP_VERSION`, `CHART_VERSION`, `NAMESPACE`,
+# `DEFAULT_VALUES_FILE`). Tests reach them as
+# class attributes on `GiteaRunnerApp`.
+APP_VERSION = GiteaRunnerApp.image_version
+CHART_VERSION = GiteaRunnerApp.chart_version
+NAMESPACE = GiteaRunnerApp.namespace
 
 
 def _make_ctx(repo: Path) -> Container:

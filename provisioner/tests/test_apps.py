@@ -16,11 +16,15 @@ from provisioner.lib.apps import (
 )
 from provisioner.lib.apps.base import BaseApp
 from provisioner.lib.apps.gitea import (
-    CHART_VERSION,
-    NAMESPACE,
     GiteaApp,
 )
 from provisioner.lib.container import Container
+
+# WP13 — chart constants used to be module-level
+# (`CHART_VERSION`, `NAMESPACE`). Tests reach them
+# as class attributes on `GiteaApp`.
+CHART_VERSION = GiteaApp.chart_version
+NAMESPACE = GiteaApp.namespace
 
 
 # ----------------------------------------------------------- registry mechanics

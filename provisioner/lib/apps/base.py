@@ -143,6 +143,35 @@ class BaseApp(abc.ABC):
             )
 
     # ----- convenience properties -----
+    #
+    # WP13 — `namespace` / `release` resolve in this
+    # order at access time:
+    #
+    #   1. class-level `namespace = "..."` (the WP13
+    #      explicit form)
+    #   2. instance-level override (`_namespace_override`,
+    #      kept for backward compat with the pre-WP13
+    #      setter API)
+    #   3. fallback to `self.name`
+    #
+    # Reading the class attribute first means the
+    # WP13 class-attribute form takes precedence over
+    # any leftover instance override; the setter
+    # continues to work for tests and runtime tweaks.
+
+    def _resolve_app_attr(
+        self, class_attr_name: str, instance_attr_name: str
+    ) -> str:
+        """Look up an app-identity attribute on the
+        class first, the instance override second,
+        and fall back to `self.name`."""
+        cls_value = getattr(type(self), class_attr_name, None)
+        if isinstance(cls_value, str) and cls_value:
+            return cls_value
+        instance_override = getattr(self, instance_attr_name, None)
+        if isinstance(instance_override, str) and instance_override:
+            return instance_override
+        return self.name
 
     @property
     def namespace(self) -> str:
@@ -150,14 +179,18 @@ class BaseApp(abc.ABC):
 
         Defaults to `self.name`. Apps whose namespace
         differs from their registered name override
-        `namespace` as a class attribute.
+        `namespace` as a class attribute:
+
+            class GiteaApp(BaseApp):
+                namespace = "gitea"
+
+        The setter (`app.namespace = "foo"`) continues
+        to work for tests and ad-hoc overrides.
         """
-        return getattr(self, "_namespace_override", self.name)
+        return self._resolve_app_attr("namespace", "_namespace_override")
 
     @namespace.setter
     def namespace(self, value: str) -> None:
-        # Allow apps to declare `namespace = "foo"` as a
-        # class attribute; we capture it on the instance.
         object.__setattr__(self, "_namespace_override", value)
 
     @property
@@ -166,9 +199,9 @@ class BaseApp(abc.ABC):
 
         Defaults to `self.name`. Apps whose helm release
         name differs from their registered name override
-        `release` as a class attribute.
+        `release` as a class attribute (see `namespace`).
         """
-        return getattr(self, "_release_override", self.name)
+        return self._resolve_app_attr("release", "_release_override")
 
     @release.setter
     def release(self, value: str) -> None:

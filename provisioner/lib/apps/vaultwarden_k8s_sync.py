@@ -44,26 +44,31 @@ from ..container import Container
 from . import AppApplyResult, AppPlanResult, AppStatus, register
 from .base import BaseApp
 
-# Chart constants. Pinned to chart 2.0.0 (matches appVersion 2.0.0;
-# the chart repo's HEAD may carry a 0.1.0 + "latest" dev tag, but
-# the published chart that the operator should consume is 2.0.0 from
-# the OCI registry).
+# Chart constants used to live here as module-level
+# `CHART`, `CHART_VERSION`, `APP_VERSION`, `NAMESPACE`,
+# `RELEASE`, `DEFAULT_VALUES_FILE`. WP13 moved them
+# onto `VaultwardenK8sSyncApp` as class attributes.
+# Call sites read `self.chart`, `self.chart_version`,
+# `self.namespace`, etc. The single source of truth
+# is `provisioner/lib/catalog/shipped.yaml`; the
+# `tests/test_app_class_attributes.py` drift test
+# pins the values against the catalog.
 REPO_NAME = "vaultwarden-kubernetes-secrets"
-CHART = "oci://ghcr.io/antoniolago/charts/vaultwarden-kubernetes-secrets"
-CHART_VERSION = "2.0.0"  # pinned in versions.yaml
-APP_VERSION = "2.0.0"    # matches Chart.yaml appVersion
-NAMESPACE = "vaultwarden-kubernetes-secrets"
-RELEASE = "vaultwarden-kubernetes-secrets"
-DEFAULT_VALUES_FILE = "values/vaultwarden-kubernetes-secrets.yaml"
 
 
 class VaultwardenK8sSyncApp(BaseApp):
     """AppSpec for VaultwardenK8sSync (VKS)."""
 
     name = "vaultwarden-k8s-sync"
+    namespace = "vaultwarden-kubernetes-secrets"
+    release = "vaultwarden-kubernetes-secrets"
+    chart = "oci://ghcr.io/antoniolago/charts/vaultwarden-kubernetes-secrets"
+    chart_version = "2.0.0"
+    image_version = "2.0.0"
+    default_values_file = "values/vaultwarden-kubernetes-secrets.yaml"
 
     def _values_file(self, ctx: Container) -> Path:
-        return ctx.repo_root / DEFAULT_VALUES_FILE
+        return ctx.repo_root / self.default_values_file
 
     def plan(
         self, ctx: Container, catalog: dict[str, Any]
@@ -71,16 +76,16 @@ class VaultwardenK8sSyncApp(BaseApp):
         return AppPlanResult(
             app_name=self.name,
             would_install=[
-                f"helm upgrade --install {RELEASE} {CHART} "
-                f"--version {CHART_VERSION} -n {NAMESPACE} "
+                f"helm upgrade --install {self.release} {self.chart} "
+                f"--version {self.chart_version} -n {self.namespace} "
                 f"--create-namespace -f "
                 f"{self._values_file(ctx)}",
             ],
             would_apply=[],
             notes=[
-                f"chart: {CHART}@{CHART_VERSION}",
+                f"chart: {self.chart}@{self.chart_version}",
                 f"image: ghcr.io/antoniolago/"
-                f"vaultwarden-kubernetes-secrets:{APP_VERSION}",
+                f"vaultwarden-kubernetes-secrets:{self.image_version}",
                 "operator image: ghcr.io/antoniolago/"
                 "vaultwarden-kubernetes-secrets (sync service)",
                 (
@@ -143,10 +148,10 @@ class VaultwardenK8sSyncApp(BaseApp):
 
         ctx.logger.info(
             "vaultwarden_k8s_sync.helm_install_started",
-            release=RELEASE,
-            namespace=NAMESPACE,
-            chart_version=CHART_VERSION,
-            chart=CHART,
+            release=self.release,
+            namespace=self.namespace,
+            chart_version=self.chart_version,
+            chart=self.chart,
             server_url_source=(
                 "env"
                 if dotenv.get("VAULTWARDEN__SERVERURL")
@@ -164,24 +169,24 @@ class VaultwardenK8sSyncApp(BaseApp):
         #    pre-emptively. We seed the Secret in step 2
         #    after the chart has been rendered.
         result = ctx.helm.install_or_upgrade(
-            release=RELEASE,
-            chart=CHART,
-            namespace=NAMESPACE,
-            version=CHART_VERSION,
+            release=self.release,
+            chart=self.chart,
+            namespace=self.namespace,
+            version=self.chart_version,
             values_files=(rendered_values,),
             timeout_s=300.0,
             extra_args=("--wait=false",),
         )
         if result.returncode != 0:
             raise RuntimeError(
-                f"helm install {RELEASE} failed: "
+                f"helm install {self.release} failed: "
                 f"rc={result.returncode} stderr={result.stderr.strip()[:500]}"
             )
         ctx.logger.info(
             "vaultwarden_k8s_sync.helm_install_ok",
-            release=RELEASE,
-            namespace=NAMESPACE,
-            chart_version=CHART_VERSION,
+            release=self.release,
+            namespace=self.namespace,
+            chart_version=self.chart_version,
         )
 
         kubectl = self._kubectl(ctx)
@@ -223,8 +228,8 @@ class VaultwardenK8sSyncApp(BaseApp):
         # .env parsing code.
         header_yaml = self._render_template(
             "auth-secret-header.yaml",
-            secret_name=NAMESPACE,
-            namespace=NAMESPACE,
+            secret_name=self.namespace,
+            namespace=self.namespace,
         )
         secret_yaml_lines = header_yaml.rstrip("\n").split("\n")
         seeded_keys: list[str] = []
@@ -248,12 +253,12 @@ class VaultwardenK8sSyncApp(BaseApp):
         secret_yaml = "\n".join(secret_yaml_lines) + "\n"
         secret_apply = kubectl.apply(
             manifest=secret_yaml,
-            namespace=NAMESPACE,
+            namespace=self.namespace,
             server_side=True,
         )
         if secret_apply.returncode != 0:
             raise RuntimeError(
-                f"kubectl apply Secret={NAMESPACE} in {NAMESPACE} "
+                f"kubectl apply Secret={self.namespace} in {self.namespace} "
                 f"failed: rc={secret_apply.returncode} "
                 f"stderr={secret_apply.stderr.strip()[:500]}"
             )
@@ -268,7 +273,7 @@ class VaultwardenK8sSyncApp(BaseApp):
         )
         ctx.logger.info(
             "vaultwarden_k8s_sync.auth_secret_seeded",
-            secret=f"{NAMESPACE}/{NAMESPACE}",
+            secret=f"{self.namespace}/{self.namespace}",
             seeded_keys=seeded_keys,
             credentials_populated=all_present,
             credentials_source=(
@@ -283,7 +288,7 @@ class VaultwardenK8sSyncApp(BaseApp):
         #    doesn't — the next-step tells the operator
         #    what to do.
         wait = kubectl.wait_deployments_available(
-            namespace=NAMESPACE,
+            namespace=self.namespace,
             label_selector="app.kubernetes.io/name=vaultwarden-kubernetes-secrets",
             timeout_s=60.0,
         )
@@ -302,13 +307,13 @@ class VaultwardenK8sSyncApp(BaseApp):
             # Manual next-step: the operator must populate
             # the Secret themselves.
             next_step_msg = (
-                f"populate Secret {NAMESPACE}/{NAMESPACE} with "
+                f"populate Secret {self.namespace}/{self.namespace} with "
                 f"BW_CLIENTID, BW_CLIENTSECRET, and "
                 f"VAULTWARDEN__MASTERPASSWORD. From your Vaultwarden "
                 f"account: Settings -> Account -> API Key, copy "
                 f"the client_id + client_secret. Then: "
-                f"kubectl -n {NAMESPACE} create secret generic "
-                f"{NAMESPACE} --from-literal=BW_CLIENTID=<uuid> "
+                f"kubectl -n {self.namespace} create secret generic "
+                f"{self.namespace} --from-literal=BW_CLIENTID=<uuid> "
                 f"--from-literal=BW_CLIENTSECRET=<secret> "
                 f"--from-literal=VAULTWARDEN__MASTERPASSWORD=<password> "
                 f"--dry-run=client -o yaml | kubectl apply -f -. "
@@ -326,7 +331,7 @@ class VaultwardenK8sSyncApp(BaseApp):
                 f"(VAULTWARDEN__ORGANIZATIONID / "
                 f"VAULTWARDEN__COLLECTIONID in values.yaml) "
                 f"is set before turning on the dashboard. "
-                f"kubectl -n {NAMESPACE} logs -l "
+                f"kubectl -n {self.namespace} logs -l "
                 f"app.kubernetes.io/name=vaultwarden-kubernetes-secrets "
                 f"to watch the first sync cycle."
             )
@@ -337,10 +342,10 @@ class VaultwardenK8sSyncApp(BaseApp):
 
         return AppApplyResult(
             app_name=self.name,
-            namespace=NAMESPACE,
-            release=RELEASE,
-            chart_version=CHART_VERSION,
-            image_version=APP_VERSION,
+            namespace=self.namespace,
+            release=self.release,
+            chart_version=self.chart_version,
+            image_version=self.image_version,
             ingress_host=None,
             next_step=next_step_msg,
         )
@@ -349,35 +354,35 @@ class VaultwardenK8sSyncApp(BaseApp):
         kubectl = self._kubectl(ctx)
         # Uninstall the helm release first (this deletes the
         # Deployment + Service + RBAC + ConfigMap).
-        helm_result = ctx.helm.uninstall(RELEASE, NAMESPACE, timeout_s=120.0)
+        helm_result = ctx.helm.uninstall(self.release, self.namespace, timeout_s=120.0)
         if helm_result.returncode != 0:
             ctx.logger.warn(
                 "vaultwarden_k8s_sync.helm_uninstall_failed",
-                release=RELEASE,
+                release=self.release,
                 stderr=helm_result.stderr.strip()[:500],
             )
         # Then delete the namespace (which deletes the auth
         # Secret + ConfigMap).
-        del_result = kubectl.delete_namespace(NAMESPACE, timeout_s=120.0)
+        del_result = kubectl.delete_namespace(self.namespace, timeout_s=120.0)
         if del_result.returncode != 0:
             ctx.logger.warn(
                 "vaultwarden_k8s_sync.namespace_delete_failed",
-                namespace=NAMESPACE,
+                namespace=self.namespace,
                 stderr=del_result.stderr.strip()[:500],
             )
         ctx.logger.info(
-            "vaultwarden_k8s_sync.destroyed", namespace=NAMESPACE
+            "vaultwarden_k8s_sync.destroyed", namespace=self.namespace
         )
 
     def status(
         self, ctx: Container, catalog: dict[str, Any]
     ) -> AppStatus:
-        list_result = ctx.helm.list_releases(namespace=NAMESPACE, timeout_s=15.0)
+        list_result = ctx.helm.list_releases(namespace=self.namespace, timeout_s=15.0)
         release_present = (
-            list_result.returncode == 0 and RELEASE in list_result.stdout
+            list_result.returncode == 0 and self.release in list_result.stdout
         )
-        chart_version: str | None = CHART_VERSION if release_present else None
-        image_version: str | None = APP_VERSION if release_present else None
+        chart_version: str | None = self.chart_version if release_present else None
+        image_version: str | None = self.image_version if release_present else None
 
         notes: list[str] = []
         if not release_present:
@@ -395,7 +400,7 @@ class VaultwardenK8sSyncApp(BaseApp):
 
         return AppStatus(
             app_name=self.name,
-            namespace=NAMESPACE,
+            namespace=self.namespace,
             release_present=release_present,
             chart_version=chart_version,
             image_version=image_version,
@@ -532,11 +537,6 @@ class VaultwardenK8sSyncApp(BaseApp):
 
 __all__ = [
     "VaultwardenK8sSyncApp",
-    "CHART",
-    "CHART_VERSION",
-    "APP_VERSION",
-    "NAMESPACE",
-    "RELEASE",
 ]
 
 

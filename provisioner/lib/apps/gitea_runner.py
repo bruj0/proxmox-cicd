@@ -121,11 +121,12 @@ from ..container import Container
 from . import AppApplyResult, AppPlanResult, AppStatus, register
 from .base import BaseApp
 
-NAMESPACE = "gitea-runner"
-RELEASE = "gitea-runner"
-CHART_VERSION = "0.2.0"  # the chart version (Chart.yaml)
-APP_VERSION = "1.0.8-dind"  # the runner image version (dind root flavour; see module docstring)
-DEFAULT_VALUES_FILE = "values/gitea-runner.yaml"
+# Chart constants used to live here as module-level
+# `NAMESPACE`, `RELEASE`, `CHART_VERSION`,
+# `APP_VERSION`, `DEFAULT_VALUES_FILE`. WP13 moved
+# them onto `GiteaRunnerApp` as class attributes.
+# The `tests/test_app_class_attributes.py` drift
+# test pins the values against `shipped.yaml`.
 
 # The Secret name the chart creates / mounts.
 #
@@ -161,9 +162,15 @@ class GiteaRunnerApp(BaseApp):
     """AppSpec for the gitea-runner chart."""
 
     name = "gitea-runner"
+    namespace = "gitea-runner"
+    release = "gitea-runner"
+    chart = "./infra/charts/gitea-runner"
+    chart_version = "0.2.0"
+    image_version = "1.0.8-dind"
+    default_values_file = "values/gitea-runner.yaml"
 
     def _values_file(self, ctx: Container) -> Path:
-        return ctx.repo_root / DEFAULT_VALUES_FILE
+        return ctx.repo_root / self.default_values_file
 
     def _chart_dir(self, ctx: Container) -> Path:
         return ctx.repo_root / "infra" / "charts" / "gitea-runner"
@@ -193,13 +200,13 @@ class GiteaRunnerApp(BaseApp):
         return AppPlanResult(
             app_name=self.name,
             would_install=[
-                f"helm upgrade --install {RELEASE} "
+                f"helm upgrade --install {self.release} "
                 f"<repo>/gitea-runner (local chart, version "
-                f"{CHART_VERSION}) -n {NAMESPACE}",
+                f"{self.chart_version}) -n {self.namespace}",
             ],
             would_apply=[
                 f"kubectl get/apply secret/{RUNNER_CONFIG_SECRET} "
-                f"-n {NAMESPACE} (regression-guarded placeholder)",
+                f"-n {self.namespace} (regression-guarded placeholder)",
                 f"Vaultwarden Secure Note seeded with VKS triple "
                 f"namespaces={VKS_TRIPLE_NAMESPACE}, "
                 f"secret-name={VKS_TRIPLE_SECRET_NAME}, "
@@ -208,7 +215,7 @@ class GiteaRunnerApp(BaseApp):
                 f"token from the Gitea admin API)",
             ],
             notes=[
-                f"image: gitea/runner:{APP_VERSION}",
+                f"image: gitea/runner:{self.image_version}",
                 "workload: StatefulSet, replicas=2 (one per "
                 "k3s node; bump per cluster)",
                 "ephemeral: false (non-ephemeral — the runner "
@@ -297,10 +304,10 @@ class GiteaRunnerApp(BaseApp):
         # Secret has a real registration token. Forcing
         # --wait here would fail the apply on a fresh install.
         result = ctx.helm.install_or_upgrade(
-            release=RELEASE,
+            release=self.release,
             chart=str(chart_dir),
-            namespace=NAMESPACE,
-            version=CHART_VERSION,
+            namespace=self.namespace,
+            version=self.chart_version,
             values_files=values_for_helm,
             timeout_s=300.0,
             extra_args=("--wait=false",),
@@ -312,9 +319,9 @@ class GiteaRunnerApp(BaseApp):
             )
         ctx.logger.info(
             "gitea_runner.helm_install_ok",
-            release=RELEASE,
-            namespace=NAMESPACE,
-            chart_version=CHART_VERSION,
+            release=self.release,
+            namespace=self.namespace,
+            chart_version=self.chart_version,
         )
 
         # 4. Wait for the runner StatefulSet to be Available.
@@ -329,8 +336,8 @@ class GiteaRunnerApp(BaseApp):
         # afterwards.
         wait = kubectl.wait(
             resource="statefulset",
-            name=RELEASE,
-            namespace=NAMESPACE,
+            name=self.release,
+            namespace=self.namespace,
             condition="condition=Available=true",
             timeout_s=180.0,
         )
@@ -366,7 +373,7 @@ class GiteaRunnerApp(BaseApp):
         live = kubectl.get(
             resource="secret",
             name=RUNNER_CONFIG_SECRET,
-            namespace=NAMESPACE,
+            namespace=self.namespace,
             jsonpath="{.data.registrationToken}",
         )
         existing_b64 = (live.stdout or "").strip()
@@ -385,7 +392,7 @@ class GiteaRunnerApp(BaseApp):
             ctx.logger.info(
                 "gitea_runner.config_secret_owned_by_vks",
                 secret=RUNNER_CONFIG_SECRET,
-                namespace=NAMESPACE,
+                namespace=self.namespace,
                 note="VaultwardenK8sSync has populated the Secret; apply will not overwrite",
             )
         else:
@@ -404,12 +411,12 @@ class GiteaRunnerApp(BaseApp):
             secret_yaml = self._render_template(
                 "registration-secret.yaml",
                 secret_name=RUNNER_CONFIG_SECRET,
-                namespace=NAMESPACE,
+                namespace=self.namespace,
                 placeholder=placeholder,
             )
             secret_apply = kubectl.apply(
                 manifest=secret_yaml,
-                namespace=NAMESPACE,
+                namespace=self.namespace,
                 server_side=True,
             )
             if secret_apply.returncode != 0:
@@ -421,7 +428,7 @@ class GiteaRunnerApp(BaseApp):
             ctx.logger.info(
                 "gitea_runner.config_secret_seeded_with_placeholder",
                 secret=RUNNER_CONFIG_SECRET,
-                namespace=NAMESPACE,
+                namespace=self.namespace,
                 note="VKS will overwrite the placeholder on the next sync cycle",
             )
 
@@ -439,7 +446,7 @@ class GiteaRunnerApp(BaseApp):
         ctx.logger.info(
             "gitea_runner.token_reconciling",
             secret=RUNNER_CONFIG_SECRET,
-            namespace=NAMESPACE,
+            namespace=self.namespace,
             vks_triple={
                 "namespaces": VKS_TRIPLE_NAMESPACE,
                 "secret-name": VKS_TRIPLE_SECRET_NAME,
@@ -452,7 +459,7 @@ class GiteaRunnerApp(BaseApp):
                 "orchestrator just pushed; the runner pod "
                 "should register with Gitea within ~1 minute. "
                 "If it does not, check `kubectl logs -n "
-                f"{NAMESPACE}` for the runner-side error "
+                f"{self.namespace}` for the runner-side error "
                 "and verify in Site Administration -> "
                 "Actions -> Runners in the Gitea UI."
             ),
@@ -460,10 +467,10 @@ class GiteaRunnerApp(BaseApp):
 
         return AppApplyResult(
             app_name=self.name,
-            namespace=NAMESPACE,
-            release=RELEASE,
-            chart_version=CHART_VERSION,
-            image_version=APP_VERSION,
+            namespace=self.namespace,
+            release=self.release,
+            chart_version=self.chart_version,
+            image_version=self.image_version,
             ingress_host=None,
             next_step=(
                 f"wait ~30s for VaultwardenK8sSync to reconcile "
@@ -480,40 +487,40 @@ class GiteaRunnerApp(BaseApp):
         kubectl = self._kubectl(ctx)
         # Uninstall the helm release first (this deletes the
         # Deployment + Service + RBAC).
-        helm_result = ctx.helm.uninstall(RELEASE, NAMESPACE, timeout_s=120.0)
+        helm_result = ctx.helm.uninstall(self.release, self.namespace, timeout_s=120.0)
         if helm_result.returncode != 0:
             ctx.logger.warn(
                 "gitea_runner.helm_uninstall_failed",
-                release=RELEASE,
+                release=self.release,
                 stderr=helm_result.stderr.strip()[:500],
             )
         # Then delete the namespace (which deletes the
         # BitwardenSecret CR + ConfigMap).
-        del_result = kubectl.delete_namespace(NAMESPACE, timeout_s=120.0)
+        del_result = kubectl.delete_namespace(self.namespace, timeout_s=120.0)
         if del_result.returncode != 0:
             ctx.logger.warn(
                 "gitea_runner.namespace_delete_failed",
-                namespace=NAMESPACE,
+                namespace=self.namespace,
                 stderr=del_result.stderr.strip()[:500],
             )
-        ctx.logger.info("gitea_runner.destroyed", namespace=NAMESPACE)
+        ctx.logger.info("gitea_runner.destroyed", namespace=self.namespace)
 
     def status(
         self, ctx: Container, catalog: dict[str, Any]
     ) -> AppStatus:
-        list_result = ctx.helm.list_releases(namespace=NAMESPACE, timeout_s=15.0)
+        list_result = ctx.helm.list_releases(namespace=self.namespace, timeout_s=15.0)
         release_present = (
-            list_result.returncode == 0 and RELEASE in list_result.stdout
+            list_result.returncode == 0 and self.release in list_result.stdout
         )
         notes: list[str] = []
         if not release_present:
             notes.append("release not installed; run `cicdctl apply cicd`")
         return AppStatus(
             app_name=self.name,
-            namespace=NAMESPACE,
+            namespace=self.namespace,
             release_present=release_present,
-            chart_version=CHART_VERSION if release_present else None,
-            image_version=APP_VERSION if release_present else None,
+            chart_version=self.chart_version if release_present else None,
+            image_version=self.image_version if release_present else None,
             ingress_host=None,
             notes=notes,
         )
@@ -870,8 +877,5 @@ register(GiteaRunnerApp)
 
 __all__ = [
     "GiteaRunnerApp",
-    "CHART_VERSION",
-    "APP_VERSION",
-    "NAMESPACE",
     "RUNNER_CONFIG_SECRET",
 ]

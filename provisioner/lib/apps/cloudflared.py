@@ -166,10 +166,14 @@ from .cloudflared_tunnel import (
 )
 
 # Chart constants. Pinned to chart 0.1.2 + appVersion 2024.8.3.
-CHART_TGZ = Path("infra/helm-charts/cloudflare-tunnel-remote-0.1.2.tgz")
-CHART_VERSION = "0.1.2"
-APP_VERSION = "2024.8.3"
-NAMESPACE = "cloudflared"
+# Chart constants used to live here as module-level
+# `CHART_TGZ`, `CHART_VERSION`, `APP_VERSION`,
+# `NAMESPACE`, `HELM_RELEASE_NAME`. WP13 moved
+# them onto `CloudflaredApp` as class attributes
+# (`chart`, `chart_version`, `image_version`,
+# `namespace`, `release`). The
+# `tests/test_app_class_attributes.py` drift test
+# pins the values against `shipped.yaml`.
 HELM_RELEASE_NAME = "cloudflare-tunnel-remote"
 
 # Tunnel name on the Cloudflare account. Stable; if you
@@ -235,6 +239,20 @@ class CloudflaredApp(BaseApp):
     """AppSpec for the cloudflared tunnel (remotely-managed)."""
 
     name = "cloudflared"
+    namespace = "cloudflared"
+    # The helm *release* name is `cloudflare-tunnel-remote`
+    # (the chart ships under that name; the namespace is
+    # `cloudflared` for the operator-facing identity).
+    release = "cloudflare-tunnel-remote"
+    # WP13 — cloudflared ships the chart as a local
+    # tarball under `infra/helm-charts/`. The
+    # `chart_version` is the chart's appVersion
+    # (`2024.8.3` is the operator-facing tunnel
+    # binary version, distinct from the chart
+    # packaging).
+    chart = "infra/helm-charts/cloudflare-tunnel-remote-0.1.2.tgz"
+    chart_version = "0.1.2"
+    image_version = "2024.8.3"
 
     # `_kubectl` is inherited from `BaseApp` (WP6). Apps
     # used to each roll a private loader here; centralizing
@@ -1051,11 +1069,11 @@ class CloudflaredApp(BaseApp):
         return AppPlanResult(
             app_name=self.name,
             would_install=[
-                f"helm upgrade --install {HELM_RELEASE_NAME} "
-                f"{CHART_TGZ} --version {CHART_VERSION} "
-                f"-n {NAMESPACE} --create-namespace "
+                f"helm upgrade --install {self.release} "
+                f"{self.chart} --version {self.chart_version} "
+                f"-n {self.namespace} --create-namespace "
                 f"--set cloudflare.tunnel_token=$TUNNEL_TOKEN "
-                f"--set image.tag={APP_VERSION} "
+                f"--set image.tag={self.image_version} "
                 f"--set replicaCount=1 "
                 f"--post-renderer "
                 f"provisioner/lib/helm_post_renderers/"
@@ -1083,7 +1101,7 @@ class CloudflaredApp(BaseApp):
                 f"{HOST_TOKEN_FILE})",
             ],
             notes=[
-                f"image: cloudflare/cloudflared:{APP_VERSION}",
+                f"image: cloudflare/cloudflared:{self.image_version}",
                 f"upstream: Envoy Gateway Service in "
                 f"{_ENVOY_GW_NAMESPACE} (labels "
                 f"{_ENVOY_GW_LABEL_NAME}={DEFAULT_GATEWAY_NAME} "
@@ -1106,7 +1124,7 @@ class CloudflaredApp(BaseApp):
                 ),
                 (
                     "chart: cloudflare-tunnel-remote @ "
-                    f"{CHART_VERSION} (vendored at {CHART_TGZ}; "
+                    f"{self.chart_version} (vendored at {self.chart}; "
                     f"remotely-managed — config lives in the "
                     f"Cloudflare dashboard, not in a local "
                     f"`config.yaml` mount)"
@@ -1138,14 +1156,14 @@ class CloudflaredApp(BaseApp):
         #    `apps/templates/cloudflared/namespace.yaml`.
         ns_create = kubectl.apply(
             manifest=self._render_template(
-                "namespace.yaml", namespace=NAMESPACE
+                "namespace.yaml", namespace=self.namespace
             ),
             namespace=None,
             server_side=False,
         )
         if ns_create.returncode != 0:
             raise RuntimeError(
-                f"kubectl apply Namespace={NAMESPACE} failed: "
+                f"kubectl apply Namespace={self.namespace} failed: "
                 f"rc={ns_create.returncode} "
                 f"stderr={ns_create.stderr.strip()[:500]}"
             )
@@ -1207,7 +1225,7 @@ class CloudflaredApp(BaseApp):
         #    upstream chart. We pass the .tgz path
         #    directly; helm reads Chart.yaml + templates/
         #    out of the archive.
-        chart_path = ctx.repo_root / CHART_TGZ
+        chart_path = ctx.repo_root / self.chart
         if not chart_path.exists():
             raise RuntimeError(
                 f"vendored chart tgz not found at "
@@ -1236,7 +1254,7 @@ class CloudflaredApp(BaseApp):
             f"cloudflare:\n"
             f"  tunnel_token: {token_quoted}\n"
             f"image:\n"
-            f"  tag: '{APP_VERSION}'\n"
+            f"  tag: '{self.image_version}'\n"
             f"replicaCount: 1\n"
         )
         os.chmod(rendered_values, 0o600)
@@ -1257,10 +1275,10 @@ class CloudflaredApp(BaseApp):
         )
 
         result = ctx.helm.install_or_upgrade(
-            release=HELM_RELEASE_NAME,
+            release=self.release,
             chart=str(chart_path),
-            namespace=NAMESPACE,
-            version=CHART_VERSION,
+            namespace=self.namespace,
+            version=self.chart_version,
             values_files=(rendered_values,),
             extra_args=("--post-renderer", str(SECRET_POST_RENDERER)),
             timeout_s=180.0,
@@ -1273,14 +1291,14 @@ class CloudflaredApp(BaseApp):
             )
         ctx.logger.info(
             "cloudflared.helm_install_ok",
-            release=HELM_RELEASE_NAME,
-            namespace=NAMESPACE,
-            chart_version=CHART_VERSION,
+            release=self.release,
+            namespace=self.namespace,
+            chart_version=self.chart_version,
         )
 
         # 8. Wait for the cloudflared Deployment to be Ready.
         wait = kubectl.wait_deployments_available(
-            namespace=NAMESPACE,
+            namespace=self.namespace,
             label_selector="pod=cloudflared",
             timeout_s=120.0,
         )
@@ -1292,10 +1310,10 @@ class CloudflaredApp(BaseApp):
 
         return AppApplyResult(
             app_name=self.name,
-            namespace=NAMESPACE,
-            release=HELM_RELEASE_NAME,
-            chart_version=CHART_VERSION,
-            image_version=APP_VERSION,
+            namespace=self.namespace,
+            release=self.release,
+            chart_version=self.chart_version,
+            image_version=self.image_version,
             ingress_host=hostname,
             next_step=None,
         )
@@ -1303,7 +1321,7 @@ class CloudflaredApp(BaseApp):
     def status(
         self, ctx: Container, catalog: dict[str, Any]
     ) -> AppStatus:
-        list_release = ctx.helm.list_releases(namespace=NAMESPACE)
+        list_release = ctx.helm.list_releases(namespace=self.namespace)
         release_present = list_release.returncode == 0 and bool(
             (list_release.stdout or "").strip()
         )
@@ -1329,10 +1347,10 @@ class CloudflaredApp(BaseApp):
             notes.append("tunnel credentials NOT yet provisioned")
         return AppStatus(
             app_name=self.name,
-            namespace=NAMESPACE,
+            namespace=self.namespace,
             release_present=release_present,
-            chart_version=CHART_VERSION if release_present else None,
-            image_version=APP_VERSION if release_present else None,
+            chart_version=self.chart_version if release_present else None,
+            image_version=self.image_version if release_present else None,
             ingress_host=self._hostname(catalog) if release_present else None,
             notes=notes,
         )
@@ -1346,15 +1364,15 @@ class CloudflaredApp(BaseApp):
         # desired (the cloudflared CLI is not part of this
         # repo's bootstrap — install from
         # https://pkg.cloudflare.com/).
-        result = ctx.helm.uninstall(HELM_RELEASE_NAME, NAMESPACE, timeout_s=180.0)
+        result = ctx.helm.uninstall(self.release, self.namespace, timeout_s=180.0)
         if result.returncode != 0:
             ctx.logger.warn(
                 "cloudflared.helm_uninstall_failed",
-                release=HELM_RELEASE_NAME,
+                release=self.release,
                 stderr=result.stderr.strip()[:500],
             )
         kubectl = self._kubectl(ctx)
-        kubectl.delete_namespace(NAMESPACE)
+        kubectl.delete_namespace(self.namespace)
 
 
 register(CloudflaredApp)

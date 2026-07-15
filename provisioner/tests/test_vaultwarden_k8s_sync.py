@@ -12,16 +12,24 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
+from provisioner.lib.apps import app_by_name, reset_registry
 from provisioner.lib.apps.vaultwarden_k8s_sync import (
-    APP_VERSION,
-    CHART,
-    CHART_VERSION,
-    NAMESPACE,
-    RELEASE,
     VaultwardenK8sSyncApp,
 )
-from provisioner.lib.apps import app_by_name, reset_registry
 from provisioner.lib.container import Container
+
+# WP13 — chart constants used to be module-level
+# (`CHART`, `CHART_VERSION`, `APP_VERSION`,
+# `NAMESPACE`, `RELEASE`, `DEFAULT_VALUES_FILE`).
+# Tests reach them as class attributes on
+# `VaultwardenK8sSyncApp`. Defining them here
+# keeps the tests self-contained without a
+# fixture indirection.
+APP_VERSION = VaultwardenK8sSyncApp.image_version
+CHART = VaultwardenK8sSyncApp.chart
+CHART_VERSION = VaultwardenK8sSyncApp.chart_version
+NAMESPACE = VaultwardenK8sSyncApp.namespace
+RELEASE = VaultwardenK8sSyncApp.release
 
 
 def _make_ctx(repo: Path) -> Container:

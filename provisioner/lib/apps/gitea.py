@@ -77,13 +77,12 @@ from ..kubectl_runner import KubectlRunner
 from . import AppApplyResult, AppPlanResult, AppStatus, register
 from .base import BaseApp
 
-# Constants pinned in versions.yaml + versions.lock.yaml.
-CHART = "oci://docker.gitea.com/charts/gitea"
-CHART_VERSION = "12.0.0"
-IMAGE_TAG = "1.26.x"
-NAMESPACE = "gitea"
-RELEASE = "gitea"
-DEFAULT_VALUES_FILE = "values/gitea.yaml"
+# Chart constants used to live here as module-level
+# `CHART`, `CHART_VERSION`, `IMAGE_TAG`, `NAMESPACE`,
+# `RELEASE`, `DEFAULT_VALUES_FILE`. WP13 moved them
+# onto `GiteaApp` as class attributes; the
+# `tests/test_app_class_attributes.py` drift test
+# pins the values against `shipped.yaml`.
 
 # Admin user / Secret contract.
 # The chart's deployment.yaml secretKeyRefs against
@@ -114,9 +113,15 @@ class GiteaApp(BaseApp):
     """AppSpec for the Gitea chart."""
 
     name = "gitea"
+    namespace = "gitea"
+    release = "gitea"
+    chart = "oci://docker.gitea.com/charts/gitea"
+    chart_version = "12.0.0"
+    image_version = "1.26.x"
+    default_values_file = "values/gitea.yaml"
 
     def _values_file(self, ctx: Container) -> Path:
-        return ctx.repo_root / DEFAULT_VALUES_FILE
+        return ctx.repo_root / self.default_values_file
 
     def _hostname(self, catalog: dict[str, Any]) -> str:
         ingress = catalog.get("ingress", {})
@@ -132,22 +137,22 @@ class GiteaApp(BaseApp):
         return AppPlanResult(
             app_name=self.name,
             would_install=[
-                f"helm upgrade --install {RELEASE} {CHART} "
-                f"--version {CHART_VERSION} -n {NAMESPACE} "
+                f"helm upgrade --install {self.release} {self.chart} "
+                f"--version {self.chart_version} -n {self.namespace} "
                 f"--create-namespace -f {rendered_values}",
             ],
             would_apply=[
-                f"kubectl apply --server-side -n {NAMESPACE} "
+                f"kubectl apply --server-side -n {self.namespace} "
                 f"(Gateway=gitea, HTTPRoute=gitea, host={host})",
-                f"kubectl apply --server-side -n {NAMESPACE} "
+                f"kubectl apply --server-side -n {self.namespace} "
                 f"Secret={ADMIN_SECRET_NAME} "
                 f"(idempotent; written only when password drifted)",
                 f"Vaultwarden Secure Note seeded with VKS triple "
-                f"namespaces={NAMESPACE}, secret-name={ADMIN_SECRET_NAME}, "
+                f"namespaces={self.namespace}, secret-name={ADMIN_SECRET_NAME}, "
                 f"secret-key=password (idempotent; dedup by triple)",
             ],
             notes=[
-                f"image: gitea/gitea:{IMAGE_TAG}",
+                f"image: gitea/gitea:{self.image_version}",
                 "persistence: proxmox-lvm-thin PVC (5Gi)",
                 f"ingress host: {host}",
                 f"rendered-values: ROOT_URL=https://{host}/, "
@@ -253,23 +258,23 @@ class GiteaApp(BaseApp):
 
         # 1. helm upgrade --install.
         result = ctx.helm.install_or_upgrade(
-            release=RELEASE,
-            chart=CHART,
-            namespace=NAMESPACE,
-            version=CHART_VERSION,
+            release=self.release,
+            chart=self.chart,
+            namespace=self.namespace,
+            version=self.chart_version,
             values_files=(rendered_values,),
             timeout_s=300.0,
         )
         if result.returncode != 0:
             raise RuntimeError(
-                f"helm upgrade --install {RELEASE} failed: "
+                f"helm upgrade --install {self.release} failed: "
                 f"rc={result.returncode} stderr={result.stderr.strip()[:500]}"
             )
         ctx.logger.info(
             "gitea.helm_install_ok",
-            release=RELEASE,
-            chart_version=CHART_VERSION,
-            namespace=NAMESPACE,
+            release=self.release,
+            chart_version=self.chart_version,
+            namespace=self.namespace,
         )
 
         # 2. Apply Gateway + HTTPRoute via the container's
@@ -280,10 +285,10 @@ class GiteaApp(BaseApp):
         # `apps/templates/gitea/gateway.yaml`; rendered via
         # `_render_template` with `${namespace}` + `${host}`.
         manifest = self._render_template(
-            "gateway.yaml", namespace=NAMESPACE, host=host
+            "gateway.yaml", namespace=self.namespace, host=host
         )
         apply_result = kubectl.apply(
-            manifest=manifest, namespace=NAMESPACE, server_side=True
+            manifest=manifest, namespace=self.namespace, server_side=True
         )
         if apply_result.returncode != 0:
             raise RuntimeError(
@@ -294,7 +299,7 @@ class GiteaApp(BaseApp):
         ctx.logger.info(
             "gitea.gateway_applied",
             host=host,
-            namespace=NAMESPACE,
+            namespace=self.namespace,
         )
 
         # 3. Surface the operator-visible next step. The chart
@@ -325,10 +330,10 @@ class GiteaApp(BaseApp):
 
         return AppApplyResult(
             app_name=self.name,
-            namespace=NAMESPACE,
-            release=RELEASE,
-            chart_version=CHART_VERSION,
-            image_version=IMAGE_TAG,
+            namespace=self.namespace,
+            release=self.release,
+            chart_version=self.chart_version,
+            image_version=self.image_version,
             ingress_host=host,
             next_step=(
                 f"log in to https://{host} as {ADMIN_USERNAME} "
@@ -345,23 +350,23 @@ class GiteaApp(BaseApp):
     def destroy(self, ctx: Container, catalog: dict[str, Any]) -> None:
         kubectl = self._kubectl(ctx)
         # helm uninstall the release.
-        result = ctx.helm.uninstall(RELEASE, NAMESPACE, timeout_s=120.0)
+        result = ctx.helm.uninstall(self.release, self.namespace, timeout_s=120.0)
         if result.returncode != 0:
             ctx.logger.warn(
                 "gitea.helm_uninstall_failed",
-                release=RELEASE,
+                release=self.release,
                 stderr=result.stderr.strip()[:500],
             )
         # Delete the namespace; PVCs are deleted via
         # the StorageClass's reclaim policy (default: Delete).
-        del_result = kubectl.delete_namespace(NAMESPACE, timeout_s=120.0)
+        del_result = kubectl.delete_namespace(self.namespace, timeout_s=120.0)
         if del_result.returncode != 0:
             ctx.logger.warn(
                 "gitea.namespace_delete_failed",
-                namespace=NAMESPACE,
+                namespace=self.namespace,
                 stderr=del_result.stderr.strip()[:500],
             )
-        ctx.logger.info("gitea.destroyed", namespace=NAMESPACE)
+        ctx.logger.info("gitea.destroyed", namespace=self.namespace)
 
     def status(
         self, ctx: Container, catalog: dict[str, Any]
@@ -369,19 +374,19 @@ class GiteaApp(BaseApp):
         host = self._hostname(catalog)
 
         # helm list -n gitea — does the release exist?
-        list_result = ctx.helm.list_releases(namespace=NAMESPACE, timeout_s=15.0)
+        list_result = ctx.helm.list_releases(namespace=self.namespace, timeout_s=15.0)
         release_present = (
-            list_result.returncode == 0 and RELEASE in list_result.stdout
+            list_result.returncode == 0 and self.release in list_result.stdout
         )
-        chart_version: str | None = CHART_VERSION if release_present else None
-        image_version: str | None = IMAGE_TAG if release_present else None
+        chart_version: str | None = self.chart_version if release_present else None
+        image_version: str | None = self.image_version if release_present else None
 
         notes: list[str] = []
         if not release_present:
             notes.append("release not installed; run `cicdctl apply cicd`")
             return AppStatus(
                 app_name=self.name,
-                namespace=NAMESPACE,
+                namespace=self.namespace,
                 release_present=False,
                 chart_version=None,
                 image_version=None,
@@ -402,7 +407,7 @@ class GiteaApp(BaseApp):
         probe = kubectl.get(
             resource="svc",
             name="gitea-http",
-            namespace=NAMESPACE,
+            namespace=self.namespace,
             jsonpath='{.metadata.annotations.gitea\\.smoke}',
             timeout_s=15.0,
         )
@@ -433,7 +438,7 @@ class GiteaApp(BaseApp):
 
         return AppStatus(
             app_name=self.name,
-            namespace=NAMESPACE,
+            namespace=self.namespace,
             release_present=True,
             chart_version=chart_version,
             image_version=image_version,
@@ -453,7 +458,7 @@ class GiteaApp(BaseApp):
         # exit code (curl returns 0 on 2xx/3xx, 22 on 4xx/5xx).
         result = kubectl.run_oneshot(
             image="curlimages/curl:8.10.1",
-            namespace=NAMESPACE,
+            namespace=self.namespace,
             command=[
                 "/bin/sh",
                 "-c",
@@ -609,7 +614,7 @@ class GiteaApp(BaseApp):
         live = kubectl.get(
             resource="secret",
             name=ADMIN_SECRET_NAME,
-            namespace=NAMESPACE,
+            namespace=self.namespace,
             jsonpath="{.data.password}",
         )
         live_pw = ""
@@ -624,7 +629,7 @@ class GiteaApp(BaseApp):
             ctx.logger.info(
                 "gitea.admin_secret_in_sync",
                 secret=ADMIN_SECRET_NAME,
-                namespace=NAMESPACE,
+                namespace=self.namespace,
             )
             return
 
@@ -636,13 +641,13 @@ class GiteaApp(BaseApp):
         secret_yaml = self._render_template(
             "admin-secret.yaml",
             secret_name=ADMIN_SECRET_NAME,
-            namespace=NAMESPACE,
+            namespace=self.namespace,
             username=ADMIN_USERNAME,
             password=password,
         )
         apply_result = kubectl.apply(
             manifest=secret_yaml,
-            namespace=NAMESPACE,
+            namespace=self.namespace,
             server_side=True,
         )
         if apply_result.returncode != 0:
@@ -654,7 +659,7 @@ class GiteaApp(BaseApp):
         ctx.logger.info(
             "gitea.admin_secret_written",
             secret=ADMIN_SECRET_NAME,
-            namespace=NAMESPACE,
+            namespace=self.namespace,
             action="updated" if live_pw else "created",
         )
 
@@ -815,7 +820,7 @@ class GiteaApp(BaseApp):
                     except Exception:
                         continue
                 if (
-                    triple.get("namespaces") == NAMESPACE
+                    triple.get("namespaces") == self.namespace
                     and triple.get("secret-name") == ADMIN_SECRET_NAME
                     and triple.get("secret-key") == "password"
                 ):
@@ -825,7 +830,7 @@ class GiteaApp(BaseApp):
                 ctx.logger.info(
                     "gitea.admin_vaultwarden_skipped",
                     reason="cipher with matching VKS triple already exists",
-                    namespace=NAMESPACE,
+                    namespace=self.namespace,
                     secret_name=ADMIN_SECRET_NAME,
                     secret_key="password",
                 )
@@ -835,7 +840,7 @@ class GiteaApp(BaseApp):
                 note_name="gitea k8s admin password",
                 body_text=password,
                 custom_fields=vks_triple(
-                    namespace=NAMESPACE,
+                    namespace=self.namespace,
                     secret_name=ADMIN_SECRET_NAME,
                     secret_key="password",
                 ),
@@ -853,7 +858,7 @@ class GiteaApp(BaseApp):
 
         ctx.logger.info(
             "gitea.admin_vaultwarden_seeded",
-            namespace=NAMESPACE,
+            namespace=self.namespace,
             secret_name=ADMIN_SECRET_NAME,
             secret_key="password",
         )
@@ -866,4 +871,4 @@ class GiteaApp(BaseApp):
 register(GiteaApp)
 
 
-__all__ = ["GiteaApp", "CHART", "CHART_VERSION", "IMAGE_TAG", "NAMESPACE"]
+__all__ = ["GiteaApp"]

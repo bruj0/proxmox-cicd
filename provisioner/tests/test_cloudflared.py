@@ -44,15 +44,20 @@ import pytest
 
 from provisioner.lib.apps import app_by_name, reset_registry
 from provisioner.lib.apps.cloudflared import (
-    APP_VERSION,
-    CHART_TGZ,
-    CHART_VERSION,
-    HELM_RELEASE_NAME,
     VWS_NOTE_SECRET_KEY,
     VWS_NOTE_SECRET_NAME,
     CloudflaredApp,
 )
 from provisioner.lib.container import Container
+
+# WP13 — chart constants used to be module-level
+# (`APP_VERSION`, `CHART_TGZ`, `CHART_VERSION`,
+# `HELM_RELEASE_NAME`). Tests reach them as class
+# attributes on `CloudflaredApp`.
+APP_VERSION = CloudflaredApp.image_version
+CHART_TGZ = CloudflaredApp.chart
+CHART_VERSION = CloudflaredApp.chart_version
+HELM_RELEASE_NAME = CloudflaredApp.release
 
 
 # ----- constants used by both the orchestrator and the mocks -----
