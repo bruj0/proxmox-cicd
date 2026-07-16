@@ -1,9 +1,9 @@
 # Architecture
 
 > Status: **Mature (2026-07-16)**. The codebase has
-> completed the 16-work-package
-> [GroupSpec abstraction plan](plans/2026-07-15-sequence-abstraction-plan.md):
-> WP0–WP15 all landed, 317 tests passing, ruff + mypy --strict
+> completed the
+> [abstraction plan](plans/2026-07-15-sequence-abstraction-plan.md):
+> all work packages landed, 317 tests passing, ruff + mypy --strict
 > clean. The SOLID seams documented below are enforced
 > by the four static guards (`tests/test_apps_no_inline_*.py`).
 > A forward-looking OpenBao migration plan lives at
@@ -81,8 +81,8 @@ The same principle extends to four cross-cutting packages:
   `Bitwarden-Client-Version` headers, high-level cipher
   CRUD, note-payload builders). Consumers: the
   `BaseApp._vaultwarden_client(...)` /
-  `BaseApp._seed_vaultwarden_note(...)` helpers (WP12;
-  single canonical site), and the unit tests under
+  `BaseApp._seed_vaultwarden_note(...)` helpers (single
+  canonical site), and the unit tests under
   `provisioner/tests/`. See
   [`docs/vaultwarden-notes.md`](vaultwarden-notes.md).
 - `provisioner/lib/helm_post_renderers/` — small Python
@@ -99,7 +99,7 @@ The same principle extends to four cross-cutting packages:
   Cloudflare Tunnel story (mint → Vaultwarden → VKS →
   chart → pod, plus rotation) lives in
   [`docs/cloudflare-tunnel.md`](cloudflare-tunnel.md).
-- `provisioner/lib/groups/` (WP2) — group-aware
+- `provisioner/lib/groups/` — group-aware
   orchestration: the `BaseGroup` ABC + `DefaultGroup` +
   `CicdStackGroup` define the apply/destroy topology for
   one cluster. The DAG is rooted at `vaultwarden-k8s-sync`
@@ -107,7 +107,7 @@ The same principle extends to four cross-cutting packages:
   apply time) and fans out to `gitea`, `gitea-runner`,
   `cloudflared`. See
   `provisioner/lib/groups/cicd_stack.py`.
-- `provisioner/lib/render_values.py` (WP10) — single source
+- `provisioner/lib/render_values.py` — single source
   of truth for "what does the orchestrator send to helm":
   `render_for_app(...)` deep-merges shipped defaults +
   per-cluster overlay + writes to
@@ -118,12 +118,12 @@ The same principle extends to four cross-cutting packages:
 
 ### O — Open/Closed
 
-Adding `harbor` or `argocd` is a four-step change (post-WP1):
+Adding `harbor` or `argocd` is a four-step change:
 
 1. Create `provisioner/lib/apps/harbor.py` with a
    `BaseApp` subclass that declares `name` / `namespace`
    / `release` / `chart` / `chart_version` /
-   `image_version` as `ClassVar[str]`s (WP13) and
+   `image_version` as `ClassVar[str]`s and
    implements the 4-method contract.
 2. Add the new app to
    `provisioner/lib/catalog/shipped.yaml` (the version
@@ -139,9 +139,9 @@ kubectl_runner, and all existing apps stay the same.
 This is **pinned by three tests**:
 - `test_orchestrator_does_not_import_app_specific_symbols`
   greps the orchestrator source for app-specific imports.
-- `test_apps_have_no_inline_<...>` (WP9, WP10, WP12, WP15)
-  scan `apps/*.py` for inline patterns that drift away
-  from the canonical helpers.
+- `test_apps_have_no_inline_<...>` scan `apps/*.py` for
+  inline patterns that drift away from the canonical
+  helpers.
 
 ### L — Liskov Substitution
 
@@ -164,22 +164,22 @@ the seam consistent across apps.
 `BaseApp` exposes:
 
 - The 4 abstract methods the orchestrator needs.
-- A small library of canonical helpers (WP6 / WP9 / WP11 /
-  WP12 / WP10) that apps reach for rather than re-implementing:
-  `_kubectl(ctx)` (WP6), `_values_file(ctx)` /
+- A small library of canonical helpers that apps reach for
+  rather than re-implementing:
+  `_kubectl(ctx)`, `_values_file(ctx)` /
   `_rendered_values_file(ctx)` /
-  `_render_for_apply(...)` (WP9 / WP10),
+  `_render_for_apply(...)`,
   `_secret_ref(name, key)` /
   `_hostname(...)` /
   `_labels(...)` /
-  `_annotations(...)` (WP9),
+  `_annotations(...)`,
   `_parse_dotenv(text)` /
   `_load_dotenv(repo_root)` /
-  `_require_env(env, key)` (WP11),
+  `_require_env(env, key)`,
   `_read_dotenv_creds(repo_root, catalog)` /
   `_vaultwarden_client(ctx, catalog)` /
-  `_seed_vaultwarden_note(...)` (WP12),
-  `_render_template(name, **vars)` (WP5).
+  `_seed_vaultwarden_note(...)`,
+  `_render_template(name, **vars)`.
 
 Apps subclass behaviour without rewriting the seam.
 
@@ -200,7 +200,7 @@ _REGISTRY: dict[str, type[BaseApp]] = {}
 def register(cls: type[BaseApp]) -> type[BaseApp]:
     """Decorator: register cls in the global app registry.
 
-    WP0 invariants enforced here:
+    Invariants enforced here:
 
       1. `cls` must subclass `BaseApp` (no more ad-hoc
          dataclass-with-no-base-shape apps).
@@ -242,7 +242,7 @@ registration; the orchestrator pulls them back via
 `reset_registry()` (called from the autouse fixture in
 `tests/conftest.py`).
 
-### The shipped catalog (WP1)
+### The shipped catalog
 
 The shipped catalog is the **version contract**: every
 app this version of `proxmox-cicd` knows how to install.
@@ -323,9 +323,9 @@ Validation:
 - `ingress.base_domain` must be a valid DNS name.
 - At least one app must be `enabled: true`.
 - Every enabled app name must exist in the shipped catalog
-  (WP1 / WP14: unknown app → `CatalogError`).
+  (unknown app → `CatalogError`).
 
-## 5. Groups (WP2 / WP3 / WP4)
+## 5. Groups
 
 A *group* is a named DAG of apps that the orchestrator
 applies / destroys together. Two built-in groups:
@@ -377,7 +377,7 @@ After a successful apply, the orchestrator writes
 
 Mode is 0600 (the file may include hostname metadata).
 
-## 7. The render layer (WP10)
+## 7. The render layer
 
 The render layer is the single source of truth for "what
 would `apply` send to helm". It lives at
@@ -413,9 +413,8 @@ the build if a future contributor introduces an
 alternative render path in `apps/*.py`.
 
 The file-move from `values/<app>.yaml` to
-`infra/clusters/<name>/values/<app>.yaml` is **deferred**
-to a follow-up WP15-item; the runtime is unchanged
-(WP10 ships the helper + CLI; the operator's existing
+`infra/clusters/<name>/values/<app>.yaml` is **deferred**;
+the runtime is unchanged (the operator's existing
 `values/<app>.yaml` files continue to be the runtime
 source).
 

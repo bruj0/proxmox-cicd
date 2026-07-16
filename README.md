@@ -68,7 +68,7 @@ Adding a 5th app is the SOLID extension recipe:
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md) — subsystem boundaries + SOLID seams (BaseApp / Container / planner).
-- [docs/plans/2026-07-15-sequence-abstraction-plan.md](docs/plans/2026-07-15-sequence-abstraction-plan.md) — the 16-WP plan that took the codebase from AppSpec Protocol → BaseApp ABC + groups + shipped catalog + render layer (WP0–WP15, all landed).
+- [docs/plans/2026-07-15-sequence-abstraction-plan.md](docs/plans/2026-07-15-sequence-abstraction-plan.md) — the abstraction plan that took the codebase from AppSpec Protocol → BaseApp ABC + groups + shipped catalog + render layer.
 - [docs/plans/2026-07-15-openbao-application-plan.md](docs/plans/2026-07-15-openbao-application-plan.md) — forward-looking plan for migrating the Vaultwarden-side secret sync to OpenBao.
 - [docs/idempotency.md](docs/idempotency.md) — what `make apply` does on a steady-state cluster.
 - [docs/cloudflare-tunnel.md](docs/cloudflare-tunnel.md) — the canonical Cloudflare Tunnel doc: end-to-end secret flow (mint → Vaultwarden → VKS → chart → pod) plus rotation runbook.
@@ -94,14 +94,14 @@ The catalog implements what the upstream docs recommend:
 Mirrors the sibling `proxmox-vms` and `proxmox-k3s` repos:
 
 - `provisioner/` — Python orchestrator (stdlib only, ruff + mypy --strict).
-- `provisioner/lib/apps/base.py` — the `BaseApp` ABC every app inherits (WP0 / WP15).
-- `provisioner/lib/groups/` — group-aware orchestration (WP2): the `cicd-stack` group is the DAG rooted at VKS, applied in topological order.
+- `provisioner/lib/apps/base.py` — the `BaseApp` ABC every app inherits.
+- `provisioner/lib/groups/` — group-aware orchestration: the `cicd-stack` group is the DAG rooted at VKS, applied in topological order.
 - `provisioner/lib/catalog/shipped.yaml` — version contract: every app this version of `proxmox-cicd` knows how to install.
-- `provisioner/lib/render_values.py` — WP10 single source of truth for "what gets sent to helm" (`render_for_app(...)`).
+- `provisioner/lib/render_values.py` — single source of truth for "what gets sent to helm" (`render_for_app(...)`).
 - `infra/clusters/<name>/` — one cluster root per cluster.
 - `infra/clusters/<name>/catalog.yaml` — operator-edited; which apps are enabled (with values overrides).
 - `infra/clusters/<name>/apps.json` — generated; the orchestrator's handoff (gitignored).
-- `values/<app>.yaml` — helm values overrides (one file per app; the WP10 file-move to `infra/clusters/<name>/values/` is deferred).
+- `values/<app>.yaml` — helm values overrides (one file per app; the planned file-move to `infra/clusters/<name>/values/` is deferred).
 - `versions.yaml` + `versions.lock.yaml` — pinned versions + provenance.
 - `docs/` — design + runbooks.
 - `logs/` — generated; structured audit log (gitignored).
